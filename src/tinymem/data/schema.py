@@ -19,6 +19,7 @@ class ReasoningExample:
     supporting_fact_ids: tuple[int, ...] | None
     source_length: int
     source_example_id: str
+    context_fact_ids: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         required_strings = (
@@ -58,3 +59,21 @@ class ReasoningExample:
                     raise ValueError("supporting_fact_ids must be positive")
             if len(set(self.supporting_fact_ids)) != len(self.supporting_fact_ids):
                 raise ValueError("supporting_fact_ids must be unique")
+
+        if self.context_fact_ids is not None:
+            if not isinstance(self.context_fact_ids, tuple):
+                raise TypeError("context_fact_ids must be a tuple or None")
+            for fact_id in self.context_fact_ids:
+                if isinstance(fact_id, bool) or not isinstance(fact_id, int):
+                    raise TypeError("context_fact_ids must contain integers")
+                if fact_id <= 0:
+                    raise ValueError("context_fact_ids must be positive")
+            if len(set(self.context_fact_ids)) != len(self.context_fact_ids):
+                raise ValueError("context_fact_ids must be unique")
+            if len(self.context_fact_ids) != len(self.context.splitlines()):
+                raise ValueError("context_fact_ids must align with context lines")
+
+        if self.supporting_fact_ids is not None and self.context_fact_ids is not None:
+            unavailable = set(self.supporting_fact_ids) - set(self.context_fact_ids)
+            if unavailable:
+                raise ValueError("supporting_fact_ids must refer to context facts")

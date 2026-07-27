@@ -79,6 +79,7 @@ def parse_babi_lines(
     episode_number = 0
     previous_line_id = 0
     context_facts: list[str] = []
+    context_fact_ids: list[int] = []
     fact_ids: set[int] = set()
     saw_source_line = False
 
@@ -94,6 +95,7 @@ def parse_babi_lines(
             episode_number += 1
             previous_line_id = 0
             context_facts = []
+            context_fact_ids = []
             fact_ids = set()
         elif episode_number == 0:
             raise ValueError("the first bAbI episode must begin with line ID 1")
@@ -107,6 +109,7 @@ def parse_babi_lines(
 
         if "\t" not in payload:
             context_facts.append(payload)
+            context_fact_ids.append(line_id)
             fact_ids.add(line_id)
             continue
 
@@ -135,6 +138,7 @@ def parse_babi_lines(
                 supporting_fact_ids=supporting_fact_ids,
                 source_length=len(context),
                 source_example_id=source_example_id,
+                context_fact_ids=tuple(context_fact_ids),
             )
         )
 

@@ -75,6 +75,7 @@ def parse_babilong_records(
                 supporting_fact_ids=None,
                 source_length=len(context),
                 source_example_id=source_example_id,
+                context_fact_ids=None,
             )
         )
 

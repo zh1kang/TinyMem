@@ -15,6 +15,7 @@ def make_example(**overrides: object) -> ReasoningExample:
         "answer": "garden",
         "supporting_fact_ids": (12, 6),
         "source_example_id": "qa2-train-000001-q14",
+        "context_fact_ids": (6, 12),
     }
     values.update(overrides)
     if "source_length" not in values:
@@ -34,6 +35,7 @@ def test_reasoning_example_preserves_all_fields() -> None:
     assert example.supporting_fact_ids == (12, 6)
     assert example.source_length == len(example.context)
     assert example.source_example_id == "qa2-train-000001-q14"
+    assert example.context_fact_ids == (6, 12)
 
 
 def test_reasoning_example_is_frozen() -> None:
@@ -138,3 +140,17 @@ def test_reasoning_example_preserves_supporting_fact_order() -> None:
     example = make_example(supporting_fact_ids=(12, 6))
 
     assert example.supporting_fact_ids == (12, 6)
+
+
+def test_reasoning_example_distinguishes_unknown_context_fact_ids() -> None:
+    assert make_example(context_fact_ids=None).context_fact_ids is None
+
+
+def test_reasoning_example_rejects_misaligned_context_fact_ids() -> None:
+    with pytest.raises(ValueError, match="must align with context lines"):
+        make_example(context_fact_ids=(6,))
+
+
+def test_reasoning_example_rejects_support_not_in_context() -> None:
+    with pytest.raises(ValueError, match="must refer to context facts"):
+        make_example(supporting_fact_ids=(13, 6))

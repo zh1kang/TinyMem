@@ -33,6 +33,7 @@ def test_parse_babilong_records_preserves_long_context_exactly() -> None:
     assert example.question == "Where is Mary?"
     assert example.answer == "bathroom"
     assert example.supporting_fact_ids is None
+    assert example.context_fact_ids is None
     assert example.source_example_id == "1k.json:record-000001"
 
 

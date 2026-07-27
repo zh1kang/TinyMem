@@ -72,6 +72,7 @@ def test_parse_babi_lines_creates_one_example_per_question() -> None:
     assert examples[0].question == "Where is Mary?"
     assert examples[0].answer == "bathroom"
     assert examples[0].supporting_fact_ids == (1,)
+    assert examples[0].context_fact_ids == (1, 2)
     assert "Where is Mary?" not in examples[1].context
     assert examples[1].context.endswith("Daniel went to the office.")
     assert examples[1].source_length == len(examples[1].context)
@@ -113,6 +114,7 @@ def test_parse_babi_lines_preserves_qa2_dependency_order() -> None:
     )[0]
 
     assert example.supporting_fact_ids == (3, 2)
+    assert example.context_fact_ids == (1, 2, 3)
 
 
 @pytest.mark.parametrize(
