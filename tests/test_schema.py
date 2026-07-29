@@ -2,7 +2,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from tinymem.data.schema import ReasoningExample
+from tinymem.data.schema import EvidenceFact, ReasoningExample
 
 
 def make_example(**overrides: object) -> ReasoningExample:
@@ -154,3 +154,30 @@ def test_reasoning_example_rejects_misaligned_context_fact_ids() -> None:
 def test_reasoning_example_rejects_support_not_in_context() -> None:
     with pytest.raises(ValueError, match="must refer to context facts"):
         make_example(supporting_fact_ids=(13, 6))
+
+
+def test_reasoning_example_validates_exact_evidence_spans() -> None:
+    context = "Book. Mary went to the garden. More."
+    start = context.index("Mary")
+    evidence = EvidenceFact(1, "Mary went to the garden.", start, start + 24)
+
+    example = make_example(
+        task_id="qa1",
+        context=context,
+        context_fact_ids=None,
+        supporting_fact_ids=(1,),
+        evidence_facts=(evidence,),
+    )
+
+    assert example.context[evidence.start_char:evidence.end_char] == evidence.text
+
+
+def test_reasoning_example_rejects_inexact_evidence_span() -> None:
+    context = "Mary went to the garden."
+    with pytest.raises(ValueError, match="must match its context span"):
+        make_example(
+            context=context,
+            context_fact_ids=None,
+            supporting_fact_ids=None,
+            evidence_facts=(EvidenceFact(1, "Mary went to the office.", 0, len(context)),),
+        )

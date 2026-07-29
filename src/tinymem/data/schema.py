@@ -7,6 +7,30 @@ SUPPORTED_SPLITS = ("train", "validation", "test")
 
 
 @dataclass(frozen=True)
+class EvidenceFact:
+    """One controlled fact and its exact location in source context."""
+
+    fact_id: int
+    text: str
+    start_char: int
+    end_char: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.fact_id, bool) or not isinstance(self.fact_id, int):
+            raise TypeError("fact_id must be an integer")
+        if self.fact_id <= 0:
+            raise ValueError("fact_id must be positive")
+        if not isinstance(self.text, str) or not self.text:
+            raise ValueError("text must be a nonempty string")
+        for field_name in ("start_char", "end_char"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{field_name} must be an integer")
+        if self.start_char < 0 or self.end_char <= self.start_char:
+            raise ValueError("evidence character span must be nonempty and nonnegative")
+
+
+@dataclass(frozen=True)
 class ReasoningExample:
     """One controlled question-answer example with source provenance."""
 
@@ -20,6 +44,7 @@ class ReasoningExample:
     source_length: int
     source_example_id: str
     context_fact_ids: tuple[int, ...] | None = None
+    evidence_facts: tuple[EvidenceFact, ...] | None = None
 
     def __post_init__(self) -> None:
         required_strings = (
@@ -77,3 +102,26 @@ class ReasoningExample:
             unavailable = set(self.supporting_fact_ids) - set(self.context_fact_ids)
             if unavailable:
                 raise ValueError("supporting_fact_ids must refer to context facts")
+
+        if self.evidence_facts is not None:
+            if not isinstance(self.evidence_facts, tuple):
+                raise TypeError("evidence_facts must be a tuple or None")
+            previous_end = -1
+            evidence_ids: set[int] = set()
+            for evidence in self.evidence_facts:
+                if not isinstance(evidence, EvidenceFact):
+                    raise TypeError("evidence_facts must contain EvidenceFact values")
+                if evidence.fact_id in evidence_ids:
+                    raise ValueError("evidence fact IDs must be unique")
+                if evidence.start_char < previous_end:
+                    raise ValueError("evidence facts must be ordered and nonoverlapping")
+                if evidence.end_char > len(self.context):
+                    raise ValueError("evidence fact span exceeds context length")
+                if self.context[evidence.start_char : evidence.end_char] != evidence.text:
+                    raise ValueError("evidence fact text must match its context span")
+                evidence_ids.add(evidence.fact_id)
+                previous_end = evidence.end_char
+            if self.supporting_fact_ids is not None:
+                unavailable = set(self.supporting_fact_ids) - evidence_ids
+                if unavailable:
+                    raise ValueError("supporting_fact_ids must refer to evidence facts")

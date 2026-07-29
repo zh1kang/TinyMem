@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from tinymem.data.babilong import load_babilong_file, parse_babilong_records
+from tinymem.data.babilong import (
+    extract_evidence_facts,
+    load_babilong_file,
+    parse_babilong_records,
+)
 
 
 def make_record(**overrides: object) -> dict[str, object]:
@@ -34,6 +38,9 @@ def test_parse_babilong_records_preserves_long_context_exactly() -> None:
     assert example.answer == "bathroom"
     assert example.supporting_fact_ids is None
     assert example.context_fact_ids is None
+    assert tuple(fact.text for fact in example.evidence_facts or ()) == (
+        "Mary journeyed to the bathroom.",
+    )
     assert example.source_example_id == "1k.json:record-000001"
 
 
@@ -146,3 +153,19 @@ def test_load_babilong_file_rejects_invalid_json(tmp_path: Path) -> None:
 def test_load_babilong_file_rejects_missing_path(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         load_babilong_file(tmp_path / "missing.json", task_id="qa1", split="test")
+
+
+def test_extract_evidence_facts_preserves_order_and_exact_spans() -> None:
+    context = (
+        "Noise. Mary moved to the garden. Noise. "
+        "Mary picked up the apple there."
+    )
+
+    facts = extract_evidence_facts(context, "qa2")
+
+    assert [fact.fact_id for fact in facts] == [1, 2]
+    assert [fact.text for fact in facts] == [
+        "Mary moved to the garden.",
+        "Mary picked up the apple there.",
+    ]
+    assert all(context[fact.start_char:fact.end_char] == fact.text for fact in facts)
