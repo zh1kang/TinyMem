@@ -2,12 +2,16 @@ import pytest
 
 from tinymem.data.schema import ReasoningExample
 from tinymem.data.symbolic_world import (
+    ObjectAction,
     OracleResult,
     SupportedValue,
     interpret,
     interpret_qa1,
+    interpret_qa2,
     parse_qa1_movement,
     parse_qa1_question,
+    parse_qa2_object_action,
+    parse_qa2_question,
     validate_oracle_result,
 )
 
@@ -28,6 +32,29 @@ def make_qa1_example(**overrides: object) -> ReasoningExample:
         "source_length": 0,
         "source_example_id": "qa1-test:episode-1:question-5",
         "context_fact_ids": (1, 2, 4),
+    }
+    values.update(overrides)
+    if "source_length" not in overrides:
+        values["source_length"] = len(values["context"])
+    return ReasoningExample(**values)
+
+
+def make_qa2_example(**overrides: object) -> ReasoningExample:
+    values: dict[str, object] = {
+        "dataset": "babi",
+        "task_id": "qa2",
+        "split": "test",
+        "context": (
+            "Mary moved to the bathroom.\n"
+            "Mary got the football there.\n"
+            "Mary went to the garden."
+        ),
+        "question": "Where is the football?",
+        "answer": "garden",
+        "supporting_fact_ids": (2, 3),
+        "source_length": 0,
+        "source_example_id": "qa2-test:episode-1:question-4",
+        "context_fact_ids": (1, 2, 3),
     }
     values.update(overrides)
     if "source_length" not in overrides:
@@ -181,5 +208,108 @@ def test_interpret_dispatches_and_validates_qa1() -> None:
 
 
 def test_interpret_rejects_unsupported_task() -> None:
-    with pytest.raises(ValueError, match="unsupported symbolic task: 'qa2'"):
-        interpret(make_qa1_example(task_id="qa2"))
+    with pytest.raises(ValueError, match="unsupported symbolic task: 'qa6'"):
+        interpret(make_qa1_example(task_id="qa6"))
+
+
+@pytest.mark.parametrize(
+    ("sentence", "action"),
+    [
+        ("Mary picked up the football there.", "acquire"),
+        ("Mary grabbed the football there.", "acquire"),
+        ("Mary got the football there.", "acquire"),
+        ("Mary took the football there.", "acquire"),
+        ("Mary left the football.", "drop"),
+        ("Mary discarded the football.", "drop"),
+        ("Mary put down the football.", "drop"),
+        ("Mary dropped the football.", "drop"),
+        ("Mary left the football there.", "drop"),
+    ],
+)
+def test_parse_qa2_object_action_supports_official_forms(
+    sentence: str,
+    action: str,
+) -> None:
+    assert parse_qa2_object_action(sentence, 8) == ObjectAction(
+        action=action,
+        person="Mary",
+        object_name="football",
+        fact_id=8,
+    )
+
+
+def test_parse_qa2_object_action_requires_there_for_acquisition() -> None:
+    with pytest.raises(ValueError, match="must end with 'there.'"):
+        parse_qa2_object_action("Mary got the football.", 1)
+
+
+def test_parse_qa2_question_extracts_object() -> None:
+    assert parse_qa2_question("Where is the football?") == "football"
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["Where is football?", "Where was the football?", "Where is the ?"],
+)
+def test_parse_qa2_question_rejects_invalid_structure(question: str) -> None:
+    with pytest.raises(ValueError):
+        parse_qa2_question(question)
+
+
+def test_interpret_qa2_moves_held_object_with_person() -> None:
+    assert interpret_qa2(make_qa2_example()) == OracleResult("garden", (2, 3))
+
+
+def test_interpret_qa2_leaves_dropped_object_in_place() -> None:
+    context = (
+        "Mary moved to the garden.\n"
+        "Mary got the football there.\n"
+        "Mary dropped the football.\n"
+        "Mary moved to the office."
+    )
+    example = make_qa2_example(
+        context=context,
+        context_fact_ids=(1, 2, 3, 4),
+        supporting_fact_ids=(3, 1),
+    )
+
+    assert interpret_qa2(example) == OracleResult("garden", (3, 1))
+
+
+def test_interpret_qa2_rejects_drop_by_nonholder() -> None:
+    context = (
+        "Mary moved to the garden.\n"
+        "John moved to the garden.\n"
+        "Mary got the football there.\n"
+        "John dropped the football."
+    )
+    example = make_qa2_example(
+        context=context,
+        context_fact_ids=(1, 2, 3, 4),
+    )
+
+    with pytest.raises(ValueError, match="cannot drop object"):
+        interpret_qa2(example)
+
+
+def test_interpret_qa2_allows_irrelevant_action_with_unknown_person_location() -> None:
+    context = (
+        "Daniel moved to the bedroom.\n"
+        "Daniel picked up the apple there.\n"
+        "Mary grabbed the milk there.\n"
+        "Mary left the milk.\n"
+        "Daniel put down the apple there."
+    )
+    example = make_qa2_example(
+        context=context,
+        context_fact_ids=(1, 2, 3, 4, 5),
+        question="Where is the apple?",
+        answer="bedroom",
+        supporting_fact_ids=(5, 1),
+    )
+
+    assert interpret_qa2(example) == OracleResult("bedroom", (5, 1))
+
+
+def test_interpret_dispatches_and_validates_qa2() -> None:
+    assert interpret(make_qa2_example()) == OracleResult("garden", (2, 3))
