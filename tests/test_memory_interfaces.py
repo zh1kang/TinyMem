@@ -38,6 +38,19 @@ def test_memory_policy_initializes_its_fixed_capacity() -> None:
     assert not state.valid.any()
 
 
+def test_memory_policy_can_initialize_scored_state() -> None:
+    policy = KeepStatePolicy(capacity=3)
+
+    state = policy.initialize(
+        batch_size=2,
+        model_width=4,
+        with_scores=True,
+    )
+
+    assert state.scores is not None
+    assert torch.isneginf(state.scores).all()
+
+
 def test_memory_policy_read_returns_state_values_and_mask() -> None:
     policy = KeepStatePolicy(capacity=2)
     state = policy.initialize(batch_size=1, model_width=4)

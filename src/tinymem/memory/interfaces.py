@@ -24,6 +24,7 @@ class MemoryPolicy(ABC):
         model_width: int,
         device: torch.device | str | None = None,
         dtype: torch.dtype = torch.float32,
+        with_scores: bool = False,
     ) -> MemoryState:
         """Create an empty state with this policy's fixed capacity."""
         return MemoryState.empty(
@@ -32,6 +33,7 @@ class MemoryPolicy(ABC):
             model_width=model_width,
             device=device,
             dtype=dtype,
+            with_scores=with_scores,
         )
 
     def read(self, state: MemoryState) -> tuple[torch.Tensor, torch.Tensor]:

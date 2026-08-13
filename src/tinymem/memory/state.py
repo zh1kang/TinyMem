@@ -16,12 +16,14 @@ class MemoryState:
     valid:     [batch, slots]
     positions: [batch, slots]
     token_ids: [batch, slots] or None for non-token memory
+    scores:    [batch, slots] or None for unscored memory
     """
 
     values: torch.Tensor
     valid: torch.Tensor
     positions: torch.Tensor
     token_ids: torch.Tensor | None = None
+    scores: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         tensors = {
@@ -31,6 +33,8 @@ class MemoryState:
         }
         if self.token_ids is not None:
             tensors["token_ids"] = self.token_ids
+        if self.scores is not None:
+            tensors["scores"] = self.scores
         for name, tensor in tensors.items():
             if not isinstance(tensor, torch.Tensor):
                 raise TypeError(f"{name} must be a torch.Tensor")
@@ -57,6 +61,12 @@ class MemoryState:
             if self.token_ids.dtype not in INTEGER_DTYPES:
                 raise TypeError("token_ids must be an integer tensor")
 
+        if self.scores is not None:
+            if self.scores.ndim != 2 or self.scores.shape != expected_shape:
+                raise ValueError(f"scores must have shape {expected_shape}")
+            if not self.scores.is_floating_point():
+                raise TypeError("scores must be a floating-point tensor")
+
         if any(tensor.device != self.values.device for tensor in tensors.values()):
             raise ValueError("all state tensors must be on the same device")
 
@@ -69,6 +79,7 @@ class MemoryState:
         model_width: int,
         device: torch.device | str | None = None,
         dtype: torch.dtype = torch.float32,
+        with_scores: bool = False,
     ) -> "MemoryState":
         """Create an empty fixed-capacity state."""
         dimensions = {
@@ -81,6 +92,8 @@ class MemoryState:
                 raise TypeError(f"{name} must be an integer")
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
+        if not isinstance(with_scores, bool):
+            raise TypeError("with_scores must be a boolean")
 
         values = torch.zeros(
             (batch_size, capacity, model_width),
@@ -104,11 +117,20 @@ class MemoryState:
             device=device,
             dtype=torch.int64,
         )
+        scores = None
+        if with_scores:
+            scores = torch.full(
+                (batch_size, capacity),
+                float("-inf"),
+                device=device,
+                dtype=torch.float32,
+            )
         return cls(
             values=values,
             valid=valid,
             positions=positions,
             token_ids=token_ids,
+            scores=scores,
         )
 
     @property
@@ -137,6 +159,8 @@ class MemoryState:
         tensors = [self.values, self.valid, self.positions]
         if self.token_ids is not None:
             tensors.append(self.token_ids)
+        if self.scores is not None:
+            tensors.append(self.scores)
         return sum(tensor.numel() * tensor.element_size() for tensor in tensors)
 
     def clear(self) -> None:
@@ -146,3 +170,5 @@ class MemoryState:
         self.positions.fill_(-1)
         if self.token_ids is not None:
             self.token_ids.fill_(-1)
+        if self.scores is not None:
+            self.scores.fill_(float("-inf"))
