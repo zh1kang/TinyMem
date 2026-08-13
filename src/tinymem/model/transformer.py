@@ -5,6 +5,7 @@ from torch import nn
 
 from tinymem.model.block import TransformerBlock
 from tinymem.model.config import ModelConfig
+from tinymem.model.kv_cache import KVCache
 from tinymem.model.normalization import RMSNorm
 
 
@@ -49,6 +50,7 @@ class DecoderOnlyTransformer(nn.Module):
         input_ids: torch.Tensor,
         *,
         position_offset: int = 0,
+        caches: list[KVCache] | None = None,
     ) -> torch.Tensor:
         """Return vocabulary logits for every input position."""
 
@@ -84,9 +86,26 @@ class DecoderOnlyTransformer(nn.Module):
                 "input sequence exceeds max_local_tokens "
                 f"({self.config.max_local_tokens})"
             )
+        if caches is not None:
+            if not isinstance(caches, list):
+                raise TypeError(f"caches must be a list or None, got {type(caches)}")
+            if len(caches) != self.config.n_layers:
+                raise ValueError(
+                    f"caches must contain {self.config.n_layers} layers, got {len(caches)}"
+                )
+            if not all(isinstance(cache, KVCache) for cache in caches):
+                raise TypeError("caches must contain only KVCache objects")
         hidden_states = self.token_embedding(input_ids)
-        for block in self.transformer_blocks:
-            hidden_states = block(hidden_states, position_offset=position_offset)
+        if caches is None:
+            for block in self.transformer_blocks:
+                hidden_states = block(hidden_states, position_offset=position_offset)
+        else:
+            for block, cache in zip(self.transformer_blocks, caches):
+                hidden_states = block(
+                    hidden_states,
+                    position_offset=position_offset,
+                    cache=cache,
+                )
         hidden_states = self.final_norm(hidden_states)
         logits = self.lm_head(hidden_states)
 

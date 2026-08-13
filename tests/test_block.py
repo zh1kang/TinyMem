@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tinymem.model.block import TransformerBlock
+from tinymem.model.kv_cache import KVCache
 
 
 def make_block() -> TransformerBlock:
@@ -50,3 +51,24 @@ def test_block_rejects_position_overflow() -> None:
 
     with pytest.raises(ValueError, match="position"):
         block(torch.randn(1, 5, 16))
+
+
+def test_cached_block_matches_full_block() -> None:
+    torch.manual_seed(21)
+    block = make_block().eval()
+    inputs = torch.randn(1, 5, 16)
+
+    full_output = block(inputs)
+    cache = KVCache(max_length=32)
+    cached_outputs = []
+    for index in range(inputs.shape[1]):
+        cached_outputs.append(
+            block(
+                inputs[:, index : index + 1],
+                position_offset=cache.end_position,
+                cache=cache,
+            )
+        )
+
+    cached_output = torch.cat(cached_outputs, dim=1)
+    torch.testing.assert_close(cached_output, full_output)

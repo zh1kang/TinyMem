@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tinymem.model.config import ModelConfig
+from tinymem.model.kv_cache import KVCache
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.losses import next_token_cross_entropy
 
@@ -126,3 +127,55 @@ def test_transformer_overfits_a_tiny_batch() -> None:
         optimizer.step()
 
     assert loss.item() < 0.01
+
+
+def test_cached_transformer_matches_full_prefill() -> None:
+    torch.manual_seed(22)
+    model = DecoderOnlyTransformer(make_config()).eval()
+    input_ids = torch.randint(0, 32, (1, 6))
+    caches = [KVCache(max_length=16) for _ in range(model.config.n_layers)]
+
+    full_logits = model(input_ids)
+    cached_logits = model(input_ids, caches=caches)
+
+    torch.testing.assert_close(cached_logits, full_logits)
+    assert all(cache.sequence_length == input_ids.shape[1] for cache in caches)
+
+
+def test_cached_transformer_matches_token_by_token_decoding() -> None:
+    torch.manual_seed(23)
+    model = DecoderOnlyTransformer(make_config()).eval()
+    input_ids = torch.randint(0, 32, (1, 6))
+    caches = [KVCache(max_length=16) for _ in range(model.config.n_layers)]
+
+    full_logits = model(input_ids)
+    cached_outputs = []
+    for index in range(input_ids.shape[1]):
+        position_offset = caches[0].end_position
+        cached_outputs.append(
+            model(
+                input_ids[:, index : index + 1],
+                position_offset=position_offset,
+                caches=caches,
+            )
+        )
+
+    cached_logits = torch.cat(cached_outputs, dim=1)
+    torch.testing.assert_close(cached_logits, full_logits)
+
+
+@pytest.mark.parametrize(
+    "caches",
+    [
+        [],
+        [KVCache(max_length=16)],
+        [object(), object()],
+        (KVCache(max_length=16), KVCache(max_length=16)),
+    ],
+)
+def test_transformer_rejects_invalid_caches(caches: object) -> None:
+    model = DecoderOnlyTransformer(make_config())
+    input_ids = torch.ones(1, 2, dtype=torch.long)
+
+    with pytest.raises((TypeError, ValueError)):
+        model(input_ids, caches=caches)
