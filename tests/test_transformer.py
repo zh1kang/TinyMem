@@ -63,6 +63,24 @@ def test_transformer_rejects_out_of_range_token_ids() -> None:
         model(torch.tensor([[0, 31, 32]]))
 
 
+@pytest.mark.parametrize(
+    ("input_ids", "position_offset", "message"),
+    [
+        (torch.empty(1, 0, dtype=torch.long), 0, "at least one token"),
+        (torch.ones(1, 16, dtype=torch.long), 1, "max_local_tokens"),
+    ],
+)
+def test_transformer_rejects_invalid_sequence_limits(
+    input_ids: torch.Tensor,
+    position_offset: int,
+    message: str,
+) -> None:
+    model = DecoderOnlyTransformer(make_config())
+
+    with pytest.raises(ValueError, match=message):
+        model(input_ids, position_offset=position_offset)
+
+
 def test_transformer_cannot_leak_future_tokens() -> None:
     torch.manual_seed(7)
     model = DecoderOnlyTransformer(make_config()).eval()

@@ -60,6 +60,8 @@ class DecoderOnlyTransformer(nn.Module):
             raise ValueError(
                 f"input_ids must be a rank-two tensor, got shape {input_ids.shape}"
             )
+        if input_ids.shape[1] == 0:
+            raise ValueError("input_ids must contain at least one token")
         if input_ids.dtype not in (torch.int32, torch.int64):
             raise TypeError(
                 f"input_ids must be an integer tensor, got dtype {input_ids.dtype}"
@@ -76,6 +78,11 @@ class DecoderOnlyTransformer(nn.Module):
         if position_offset < 0:
             raise ValueError(
                 f"position_offset must be nonnegative, got {position_offset}"
+            )
+        if position_offset + input_ids.shape[1] > self.config.max_local_tokens:
+            raise ValueError(
+                "input sequence exceeds max_local_tokens "
+                f"({self.config.max_local_tokens})"
             )
         hidden_states = self.token_embedding(input_ids)
         for block in self.transformer_blocks:
