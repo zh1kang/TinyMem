@@ -3,6 +3,7 @@ import torch
 
 from tinymem.model.config import ModelConfig
 from tinymem.model.transformer import DecoderOnlyTransformer
+from tinymem.training.losses import next_token_cross_entropy
 
 
 def make_config(**overrides: object) -> ModelConfig:
@@ -60,3 +61,50 @@ def test_transformer_rejects_out_of_range_token_ids() -> None:
 
     with pytest.raises(ValueError, match="token ID"):
         model(torch.tensor([[0, 31, 32]]))
+
+
+def test_transformer_cannot_leak_future_tokens() -> None:
+    torch.manual_seed(7)
+    model = DecoderOnlyTransformer(make_config()).eval()
+    original = torch.tensor([[1, 2, 3, 4]])
+    changed_future = torch.tensor([[1, 2, 3, 9]])
+
+    original_logits = model(original)
+    changed_logits = model(changed_future)
+
+    torch.testing.assert_close(original_logits[:, :3], changed_logits[:, :3])
+
+
+def test_transformer_parameters_receive_finite_gradients() -> None:
+    model = DecoderOnlyTransformer(make_config())
+    input_ids = torch.randint(0, 32, (2, 7))
+
+    loss = next_token_cross_entropy(model(input_ids), input_ids)
+    loss.backward()
+
+    for parameter in model.parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
+
+
+def test_transformer_overfits_a_tiny_batch() -> None:
+    torch.manual_seed(11)
+    config = make_config(
+        vocab_size=8,
+        d_model=16,
+        n_layers=1,
+        n_heads=2,
+        d_ff=32,
+        max_local_tokens=8,
+    )
+    model = DecoderOnlyTransformer(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.03)
+    input_ids = torch.tensor([[0, 1, 2, 3], [3, 2, 1, 0]])
+
+    for _ in range(100):
+        optimizer.zero_grad()
+        loss = next_token_cross_entropy(model(input_ids), input_ids)
+        loss.backward()
+        optimizer.step()
+
+    assert loss.item() < 0.01
