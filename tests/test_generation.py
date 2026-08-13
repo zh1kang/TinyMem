@@ -32,6 +32,28 @@ def test_greedy_generation_is_deterministic() -> None:
     assert torch.equal(first[:, :3], prompt)
 
 
+def test_generation_uses_one_prefill_and_single_token_decodes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = make_model()
+    prompt = torch.tensor([[1, 2, 3]])
+    original_forward = model.forward
+    input_shapes: list[tuple[int, int]] = []
+
+    def tracked_forward(
+        input_ids: torch.Tensor,
+        **kwargs: object,
+    ) -> torch.Tensor:
+        input_shapes.append((input_ids.shape[0], input_ids.shape[1]))
+        return original_forward(input_ids, **kwargs)
+
+    monkeypatch.setattr(model, "forward", tracked_forward)
+
+    generate(model, prompt, max_new_tokens=3)
+
+    assert input_shapes == [(1, 3), (1, 1), (1, 1)]
+
+
 def test_zero_token_generation_returns_prompt_copy() -> None:
     model = make_model()
     prompt = torch.tensor([[1, 2]])
