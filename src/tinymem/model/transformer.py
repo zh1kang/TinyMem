@@ -81,11 +81,6 @@ class DecoderOnlyTransformer(nn.Module):
             raise ValueError(
                 f"position_offset must be nonnegative, got {position_offset}"
             )
-        if position_offset + input_ids.shape[1] > self.config.max_local_tokens:
-            raise ValueError(
-                "input sequence exceeds max_local_tokens "
-                f"({self.config.max_local_tokens})"
-            )
         if caches is not None:
             if not isinstance(caches, list):
                 raise TypeError(f"caches must be a list or None, got {type(caches)}")
@@ -95,6 +90,16 @@ class DecoderOnlyTransformer(nn.Module):
                 )
             if not all(isinstance(cache, KVCache) for cache in caches):
                 raise TypeError("caches must contain only KVCache objects")
+            if input_ids.shape[1] > self.config.max_local_tokens:
+                raise ValueError(
+                    "input segment exceeds max_local_tokens "
+                    f"({self.config.max_local_tokens})"
+                )
+        elif position_offset + input_ids.shape[1] > self.config.max_local_tokens:
+            raise ValueError(
+                "input sequence exceeds max_local_tokens "
+                f"({self.config.max_local_tokens})"
+            )
         hidden_states = self.token_embedding(input_ids)
         if caches is None:
             for block in self.transformer_blocks:

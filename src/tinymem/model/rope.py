@@ -81,7 +81,7 @@ class RotaryEmbedding(nn.Module):
             raise ValueError("position_offset must be nonnegative")
 
         sequence_length = x.shape[-2]
-        if position_offset + sequence_length > self.max_position_embeddings:
+        if sequence_length > self.max_position_embeddings:
             raise ValueError("sequence exceeds the maximum position supported")
 
         positions = torch.arange(
