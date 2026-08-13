@@ -5,6 +5,7 @@ from numbers import Real
 import torch
 from torch import nn
 
+from tinymem.model.kv_cache import KVCache
 from tinymem.model.rope import RotaryEmbedding
 
 
@@ -73,6 +74,7 @@ class CausalSelfAttention(nn.Module):
         x: torch.Tensor,
         *,
         position_offset: int = 0,
+        cache: KVCache | None = None,
     ) -> torch.Tensor:
         """Return attention output without allowing future-token access."""
 
@@ -86,12 +88,22 @@ class CausalSelfAttention(nn.Module):
             )
         if not x.is_floating_point():
             raise TypeError(f"x must be a floating-point tensor, got {x.dtype}")
+        if isinstance(position_offset, bool) or not isinstance(position_offset, int):
+            raise TypeError(
+                f"position_offset must be an int, got {type(position_offset)}"
+            )
+        if position_offset < 0:
+            raise ValueError("position_offset must be nonnegative")
+        if cache is not None and not isinstance(cache, KVCache):
+            raise TypeError(f"cache must be a KVCache or None, got {type(cache)}")
+        if cache is not None and position_offset != cache.end_position:
+            raise ValueError(
+                "position_offset must equal cache.end_position when using a cache"
+            )
 
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
-
-
 
         q = q.reshape(x.size(0), x.size(1), self.n_heads, self.head_dim).transpose(1, 2)
         k = k.reshape(x.size(0), x.size(1), self.n_heads, self.head_dim).transpose(1, 2)
@@ -100,21 +112,34 @@ class CausalSelfAttention(nn.Module):
         q = self.rotary(q, position_offset=position_offset)
         k = self.rotary(k, position_offset=position_offset)
 
-        attn_score = q @ k.transpose(-2, -1) / (self.head_dim**0.5)
-        causal_mask = torch.triu(
-            torch.ones(
-                attn_score.size(-2),
-                attn_score.size(-1),
-                dtype=torch.bool,
-                device=attn_score.device,
-            ),
-            diagonal=1,
+        if cache is None:
+            attention_keys = k
+            attention_values = v
+            key_start_position = position_offset
+        else:
+            cache.append(k, v)
+            attention_keys, attention_values = cache.get()
+            key_start_position = cache.start_position
+
+        attn_score = (
+            q @ attention_keys.transpose(-2, -1) / (self.head_dim**0.5)
         )
+        query_positions = torch.arange(
+            position_offset,
+            position_offset + x.size(1),
+            device=x.device,
+        )
+        key_positions = torch.arange(
+            key_start_position,
+            key_start_position + attention_keys.size(-2),
+            device=x.device,
+        )
+        causal_mask = key_positions.unsqueeze(0) > query_positions.unsqueeze(1)
         attn_score = attn_score.masked_fill(causal_mask, float("-inf"))
         attn_prob = torch.softmax(attn_score, dim=-1)
         attn_prob = self.dropout(attn_prob)
 
-        attn_output = attn_prob @ v
+        attn_output = attn_prob @ attention_values
         attn_output = attn_output.transpose(1, 2).reshape(
             x.size(0),
             x.size(1),

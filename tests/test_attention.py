@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tinymem.model.attention import CausalSelfAttention
+from tinymem.model.kv_cache import KVCache
 
 
 def test_attention_preserves_shape() -> None:
@@ -69,3 +70,52 @@ def test_attention_rejects_future_position_overflow() -> None:
 
     with pytest.raises(ValueError, match="position"):
         attention(torch.randn(1, 5, 16))
+
+
+def test_cached_attention_matches_full_prefill() -> None:
+    torch.manual_seed(12)
+    attention = CausalSelfAttention(16, 4, 32).eval()
+    inputs = torch.randn(1, 6, 16)
+
+    full_output = attention(inputs)
+    cache = KVCache(max_length=32)
+    cached_output = attention(inputs, cache=cache, position_offset=0)
+
+    torch.testing.assert_close(cached_output, full_output)
+    assert cache.sequence_length == inputs.shape[1]
+
+
+def test_cached_attention_matches_token_by_token_decoding() -> None:
+    torch.manual_seed(13)
+    attention = CausalSelfAttention(16, 4, 32).eval()
+    inputs = torch.randn(1, 6, 16)
+
+    full_output = attention(inputs)
+    cache = KVCache(max_length=32)
+    token_outputs = []
+    for index in range(inputs.shape[1]):
+        token_outputs.append(
+            attention(
+                inputs[:, index : index + 1],
+                cache=cache,
+                position_offset=cache.end_position,
+            )
+        )
+    cached_output = torch.cat(token_outputs, dim=1)
+
+    torch.testing.assert_close(cached_output, full_output)
+
+
+def test_cached_attention_requires_contiguous_position_offset() -> None:
+    attention = CausalSelfAttention(16, 4, 32)
+    cache = KVCache(max_length=32)
+
+    with pytest.raises(ValueError, match="cache.end_position"):
+        attention(torch.randn(1, 1, 16), cache=cache, position_offset=1)
+
+
+def test_attention_rejects_invalid_cache_type() -> None:
+    attention = CausalSelfAttention(16, 4, 32)
+
+    with pytest.raises(TypeError, match="KVCache"):
+        attention(torch.randn(1, 1, 16), cache=object())
