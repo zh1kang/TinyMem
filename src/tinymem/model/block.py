@@ -5,7 +5,7 @@ from numbers import Real
 import torch
 from torch import nn
 
-from tinymem.model.attention import CausalSelfAttention
+from tinymem.model.attention import AttentionObserver, CausalSelfAttention
 from tinymem.model.feedforward import FeedForward
 from tinymem.model.kv_cache import KVCache
 from tinymem.model.normalization import RMSNorm
@@ -88,6 +88,7 @@ class TransformerBlock(nn.Module):
         *,
         position_offset: int = 0,
         cache: KVCache | None = None,
+        attention_observer: AttentionObserver | None = None,
     ) -> torch.Tensor:
         """Apply two pre-normalized residual updates."""
 
@@ -107,6 +108,7 @@ class TransformerBlock(nn.Module):
             normalized,
             position_offset=position_offset,
             cache=cache,
+            attention_observer=attention_observer,
         )
         x = x + attention_output
 

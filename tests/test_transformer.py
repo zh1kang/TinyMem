@@ -164,6 +164,24 @@ def test_cached_transformer_matches_token_by_token_decoding() -> None:
     torch.testing.assert_close(cached_logits, full_logits)
 
 
+def test_transformer_forwards_observer_to_every_attention_layer() -> None:
+    model = DecoderOnlyTransformer(make_config()).eval()
+    observations: list[tuple[torch.Size, torch.Tensor]] = []
+
+    model(
+        torch.tensor([[1, 2, 3]]),
+        position_offset=5,
+        attention_observer=lambda probabilities, positions: observations.append(
+            (probabilities.shape, positions)
+        ),
+    )
+
+    assert len(observations) == model.config.n_layers
+    for shape, positions in observations:
+        assert shape == (1, model.config.n_heads, 3, 3)
+        assert torch.equal(positions, torch.tensor([5, 6, 7]))
+
+
 @pytest.mark.parametrize(
     "caches",
     [

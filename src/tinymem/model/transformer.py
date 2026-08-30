@@ -3,6 +3,7 @@
 import torch
 from torch import nn
 
+from tinymem.model.attention import AttentionObserver
 from tinymem.model.block import TransformerBlock
 from tinymem.model.config import ModelConfig
 from tinymem.model.kv_cache import KVCache
@@ -51,6 +52,7 @@ class DecoderOnlyTransformer(nn.Module):
         *,
         position_offset: int = 0,
         caches: list[KVCache] | None = None,
+        attention_observer: AttentionObserver | None = None,
     ) -> torch.Tensor:
         """Return vocabulary logits for every input position."""
 
@@ -103,13 +105,18 @@ class DecoderOnlyTransformer(nn.Module):
         hidden_states = self.token_embedding(input_ids)
         if caches is None:
             for block in self.transformer_blocks:
-                hidden_states = block(hidden_states, position_offset=position_offset)
+                hidden_states = block(
+                    hidden_states,
+                    position_offset=position_offset,
+                    attention_observer=attention_observer,
+                )
         else:
             for block, cache in zip(self.transformer_blocks, caches):
                 hidden_states = block(
                     hidden_states,
                     position_offset=position_offset,
                     cache=cache,
+                    attention_observer=attention_observer,
                 )
         hidden_states = self.final_norm(hidden_states)
         logits = self.lm_head(hidden_states)

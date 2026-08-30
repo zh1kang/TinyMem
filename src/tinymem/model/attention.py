@@ -1,5 +1,6 @@
 """Causal multi-head self-attention for the TinyMem decoder."""
 
+from collections.abc import Callable
 from numbers import Real
 
 import torch
@@ -7,6 +8,9 @@ from torch import nn
 
 from tinymem.model.kv_cache import KVCache
 from tinymem.model.rope import RotaryEmbedding
+
+
+AttentionObserver = Callable[[torch.Tensor, torch.Tensor], None]
 
 
 class CausalSelfAttention(nn.Module):
@@ -75,6 +79,7 @@ class CausalSelfAttention(nn.Module):
         *,
         position_offset: int = 0,
         cache: KVCache | None = None,
+        attention_observer: AttentionObserver | None = None,
     ) -> torch.Tensor:
         """Return attention output without allowing future-token access."""
 
@@ -100,6 +105,8 @@ class CausalSelfAttention(nn.Module):
             raise ValueError(
                 "position_offset must equal cache.end_position when using a cache"
             )
+        if attention_observer is not None and not callable(attention_observer):
+            raise TypeError("attention_observer must be callable or None")
 
         q = self.q_proj(x)
         k = self.k_proj(x)
@@ -137,6 +144,12 @@ class CausalSelfAttention(nn.Module):
         causal_mask = key_positions.unsqueeze(0) > query_positions.unsqueeze(1)
         attn_score = attn_score.masked_fill(causal_mask, float("-inf"))
         attn_prob = torch.softmax(attn_score, dim=-1)
+        if attention_observer is not None:
+            attention_observer(
+                attn_prob.detach().clone(),
+                key_positions.clone(),
+            )
+
         attn_prob = self.dropout(attn_prob)
 
         attn_output = attn_prob @ attention_values

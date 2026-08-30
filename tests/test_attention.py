@@ -119,3 +119,76 @@ def test_attention_rejects_invalid_cache_type() -> None:
 
     with pytest.raises(TypeError, match="KVCache"):
         attention(torch.randn(1, 1, 16), cache=object())
+
+
+def test_attention_observer_receives_pre_dropout_probabilities() -> None:
+    attention = CausalSelfAttention(16, 4, 32, dropout=0.5).train()
+    inputs = torch.randn(2, 3, 16)
+    observations: list[tuple[torch.Tensor, torch.Tensor]] = []
+    dropout_inputs: list[torch.Tensor] = []
+
+    hook = attention.dropout.register_forward_pre_hook(
+        lambda _module, args: dropout_inputs.append(args[0].detach().clone())
+    )
+    try:
+        attention(
+            inputs,
+            position_offset=4,
+            attention_observer=lambda probabilities, positions: observations.append(
+                (probabilities, positions)
+            ),
+        )
+    finally:
+        hook.remove()
+
+    assert len(observations) == 1
+    probabilities, positions = observations[0]
+    assert probabilities.shape == (2, 4, 3, 3)
+    assert torch.equal(positions, torch.tensor([4, 5, 6]))
+    torch.testing.assert_close(probabilities, dropout_inputs[0])
+    torch.testing.assert_close(
+        probabilities.sum(dim=-1),
+        torch.ones(2, 4, 3),
+    )
+
+
+def test_attention_observer_cannot_mutate_attention_computation() -> None:
+    torch.manual_seed(14)
+    attention = CausalSelfAttention(16, 4, 32).eval()
+    inputs = torch.randn(1, 3, 16)
+    expected = attention(inputs)
+
+    actual = attention(
+        inputs,
+        attention_observer=lambda probabilities, positions: (
+            probabilities.zero_(),
+            positions.fill_(99),
+        ),
+    )
+
+    torch.testing.assert_close(actual, expected)
+
+
+def test_cached_attention_observer_receives_absolute_window_positions() -> None:
+    attention = CausalSelfAttention(16, 4, 4).eval()
+    cache = KVCache(max_length=4)
+    observed_positions: list[torch.Tensor] = []
+
+    for position in range(6):
+        attention(
+            torch.randn(1, 1, 16),
+            cache=cache,
+            position_offset=cache.end_position,
+            attention_observer=lambda _probabilities, positions: (
+                observed_positions.append(positions)
+            ),
+        )
+
+    assert torch.equal(observed_positions[-1], torch.tensor([2, 3, 4, 5]))
+
+
+def test_attention_rejects_noncallable_observer() -> None:
+    attention = CausalSelfAttention(16, 4, 32)
+
+    with pytest.raises(TypeError, match="callable"):
+        attention(torch.randn(1, 2, 16), attention_observer=object())
