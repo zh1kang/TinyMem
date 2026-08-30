@@ -4,6 +4,18 @@ import torch
 from tinymem.model.rope import RotaryEmbedding
 
 
+def test_rope_uses_standard_inverse_frequency_schedule() -> None:
+    rope = RotaryEmbedding(
+        head_dim=8,
+        max_position_embeddings=16,
+        base=10_000.0,
+    )
+
+    expected = torch.tensor([1.0, 0.1, 0.01, 0.001])
+
+    torch.testing.assert_close(rope.inv_freq, expected)
+
+
 def test_rope_preserves_shape_and_dtype() -> None:
     rope = RotaryEmbedding(head_dim=8, max_position_embeddings=16)
     inputs = torch.randn(2, 4, 6, 8)

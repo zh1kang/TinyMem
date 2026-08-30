@@ -49,9 +49,7 @@ class RotaryEmbedding(nn.Module):
         self.base = base
 
         inv_freq = base ** (
-            -2
-            * torch.arange(0, head_dim, 2, dtype=torch.float32)
-            / head_dim
+            -torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim
         )
         self.register_buffer("inv_freq", inv_freq)
 
