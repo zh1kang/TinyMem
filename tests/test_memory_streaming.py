@@ -28,7 +28,7 @@ def make_memory_stream(model: DecoderOnlyTransformer) -> StreamingDecoder:
     )
 
 
-def test_memory_stream_preserves_local_only_logits_before_read_integration() -> None:
+def test_empty_memory_preserves_local_only_logits() -> None:
     torch.manual_seed(41)
     model = make_model()
     local_stream = StreamingDecoder(model, segment_length=2)
@@ -48,6 +48,33 @@ def test_memory_stream_preserves_local_only_logits_before_read_integration() -> 
 
     torch.testing.assert_close(memory_logits, local_logits)
     assert not memory_stream.memory_state.valid.any()
+
+
+def test_memory_stream_reads_tokens_after_they_leave_local_context() -> None:
+    torch.manual_seed(47)
+    model = make_model()
+    local_stream = StreamingDecoder(model, segment_length=2)
+    memory_stream = make_memory_stream(model)
+    input_ids = torch.tensor([[1, 2, 3, 4, 5, 6]])
+
+    local_logits = torch.cat(
+        [
+            local_stream.process_segment(input_ids[:, start : start + 2])
+            for start in range(0, input_ids.shape[1], 2)
+        ],
+        dim=1,
+    )
+    memory_logits = torch.cat(
+        [
+            memory_stream.process_segment(input_ids[:, start : start + 2])
+            for start in range(0, input_ids.shape[1], 2)
+        ],
+        dim=1,
+    )
+
+    torch.testing.assert_close(memory_logits[:, :5], local_logits[:, :5])
+    assert not torch.allclose(memory_logits[:, 5], local_logits[:, 5])
+    assert torch.equal(memory_stream.memory_state.positions, torch.tensor([[0, 1]]))
 
 
 def test_memory_stream_stores_expired_tokens_with_cumulative_scores() -> None:

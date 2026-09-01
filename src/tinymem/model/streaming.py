@@ -13,11 +13,12 @@ from tinymem.memory.interfaces import MemoryPolicy
 from tinymem.memory.state import MemoryState
 from tinymem.memory.token_window import LocalTokenWindow, RawTokenBatch
 from tinymem.model.kv_cache import KVCache
+from tinymem.model.memory_input import AttentionMemory
 from tinymem.model.transformer import DecoderOnlyTransformer
 
 
 class StreamingDecoder:
-    """Process a token stream with a local cache and optional memory writes."""
+    """Process a token stream with a local cache and optional persistent memory."""
 
     def __init__(
         self,
@@ -112,6 +113,15 @@ class StreamingDecoder:
             with_scores=True,
         )
 
+    def _memory_for_attention(self) -> AttentionMemory | None:
+        if self._memory_state is None:
+            return None
+        return AttentionMemory(
+            values=self._memory_state.values,
+            valid=self._memory_state.valid,
+            positions=self._memory_state.positions,
+        )
+
     def _observe_attention(
         self,
         attention_prob: torch.Tensor,
@@ -186,6 +196,7 @@ class StreamingDecoder:
                 token_ids,
                 position_offset=position_offset,
                 caches=self.caches,
+                memory=self._memory_for_attention(),
                 attention_observer=(
                     self._observe_attention
                     if self.memory_policy is not None
