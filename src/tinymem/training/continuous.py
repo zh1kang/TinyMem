@@ -199,6 +199,99 @@ def encode_qa_with_token_distractors(
     )
 
 
+def encode_qa_with_distributed_facts(
+    example: ReasoningExample,
+    vocabulary: ControlledVocabulary,
+    *,
+    distractor_ids: Sequence[int],
+    segment_length: int,
+    gap_rotation: int = 0,
+) -> EncodedQAExample:
+    """Distribute controlled facts through filler and label fact segments."""
+    if not isinstance(example, ReasoningExample):
+        raise TypeError("example must be a ReasoningExample")
+    if not isinstance(vocabulary, ControlledVocabulary):
+        raise TypeError("vocabulary must be a ControlledVocabulary")
+    if not isinstance(distractor_ids, Sequence) or isinstance(
+        distractor_ids,
+        (str, bytes),
+    ):
+        raise TypeError("distractor_ids must be a sequence of integers")
+    if any(
+        isinstance(token_id, bool)
+        or not isinstance(token_id, int)
+        or not 0 <= token_id < len(vocabulary)
+        for token_id in distractor_ids
+    ):
+        raise ValueError("distractor_ids must contain valid vocabulary IDs")
+    for name, value in (
+        ("segment_length", segment_length),
+        ("gap_rotation", gap_rotation),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+    if segment_length <= 0:
+        raise ValueError("segment_length must be positive")
+    if gap_rotation < 0:
+        raise ValueError("gap_rotation must be nonnegative")
+
+    facts = example.context.splitlines()
+    if not facts or any(not fact for fact in facts):
+        raise ValueError("controlled context must contain nonempty fact lines")
+    gap_count = len(facts) + 1
+    base_length, remainder = divmod(len(distractor_ids), gap_count)
+    long_gaps = {
+        (gap_rotation + offset) % gap_count
+        for offset in range(remainder)
+    }
+    gap_lengths = [
+        base_length + int(index in long_gaps)
+        for index in range(gap_count)
+    ]
+    gaps = []
+    offset = 0
+    for length in gap_lengths:
+        gaps.append(distractor_ids[offset : offset + length])
+        offset += length
+
+    separator_ids = vocabulary.encode("\n")
+    input_ids = [vocabulary.token_to_id["<bos>"]]
+    fact_spans = []
+    for gap, fact in zip(gaps[:-1], facts, strict=True):
+        input_ids.extend(gap)
+        input_ids.extend(separator_ids)
+        start = len(input_ids)
+        input_ids.extend(vocabulary.encode(fact))
+        fact_spans.append((start, len(input_ids)))
+    input_ids.extend(separator_ids)
+    input_ids.extend(gaps[-1])
+    input_ids.extend(vocabulary.encode(f"\n{example.question} "))
+    answer_ids = vocabulary.encode(example.answer)
+    if len(answer_ids) != 1:
+        raise ValueError("controlled answer must encode to exactly one token")
+    input_ids.append(answer_ids[0])
+
+    segment_count = (len(input_ids) + segment_length - 1) // segment_length
+    write_targets = tuple(
+        any(
+            segment_start < fact_end
+            and segment_start + segment_length > fact_start
+            for fact_start, fact_end in fact_spans
+        )
+        for segment_start in range(
+            0,
+            segment_count * segment_length,
+            segment_length,
+        )
+    )
+    return EncodedQAExample(
+        input_ids=tuple(input_ids),
+        answer_id=answer_ids[0],
+        source_example_id=example.source_example_id,
+        segment_write_targets=write_targets,
+    )
+
+
 def train_continuous_answer_supervision(
     decoder: SegmentedContinuousDecoder,
     optimizer: Optimizer,
@@ -297,25 +390,30 @@ def train_continuous_answer_supervision(
                 write_valid[row, :expected_count] = True
             positive_mask = write_valid & write_targets
             negative_mask = write_valid & ~write_targets
-            if not positive_mask.any() or not negative_mask.any():
-                raise ValueError(
-                    "write supervision requires positive and negative segments"
+            class_losses = []
+            if positive_mask.any():
+                positive_weights = positive_mask.to(
+                    dtype=output.write_logits.dtype
                 )
-            positive_weights = positive_mask.to(
-                dtype=output.write_logits.dtype
-            )
-            negative_weights = negative_mask.to(
-                dtype=output.write_logits.dtype
-            )
-            positive_loss = (
-                F.softplus(-output.write_logits) * positive_weights
-            ).sum() / positive_weights.sum()
-            negative_loss = (
-                F.softplus(output.write_logits) * negative_weights
-            ).sum() / negative_weights.sum()
-            write_loss = 0.5 * (
-                positive_loss + negative_loss
-            )
+                class_losses.append(
+                    (
+                        F.softplus(-output.write_logits)
+                        * positive_weights
+                    ).sum()
+                    / positive_weights.sum()
+                )
+            if negative_mask.any():
+                negative_weights = negative_mask.to(
+                    dtype=output.write_logits.dtype
+                )
+                class_losses.append(
+                    (
+                        F.softplus(output.write_logits)
+                        * negative_weights
+                    ).sum()
+                    / negative_weights.sum()
+                )
+            write_loss = torch.stack(class_losses).mean()
             loss = loss + write_loss_weight * write_loss
         if not torch.isfinite(loss):
             raise RuntimeError("continuous-memory training produced nonfinite loss")

@@ -15,6 +15,7 @@ from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.continuous import (
     collate_segmented_answer_supervision,
+    encode_qa_with_distributed_facts,
     encode_qa_with_token_distractor,
     encode_qa_with_token_distractors,
     qa1_requires_cross_segment_memory,
@@ -178,6 +179,44 @@ def test_position_randomized_distractors_label_only_context_segments() -> None:
     assert not delayed.segment_write_targets[-1]
 
 
+def test_distributed_fact_encoding_separates_fact_write_targets() -> None:
+    vocabulary, _ = make_examples()
+    raw_example = parse_babi_lines(
+        [
+            "1 Mary moved to the kitchen.\n",
+            "2 John went to the office.\n",
+            "3 Where is Mary?\tkitchen\t1\n",
+        ],
+        task_id="qa1",
+        split="train",
+        source_name="fixture.txt",
+    )[0]
+    unknown = vocabulary.token_to_id["<unk>"]
+
+    distributed = encode_qa_with_distributed_facts(
+        raw_example,
+        vocabulary,
+        distractor_ids=[unknown] * 24,
+        segment_length=4,
+        gap_rotation=1,
+    )
+
+    targets = distributed.segment_write_targets
+    assert targets is not None
+    positive_segments = [index for index, target in enumerate(targets) if target]
+    assert positive_segments
+    assert any(
+        right - left > 1
+        for left, right in zip(
+            positive_segments,
+            positive_segments[1:],
+            strict=False,
+        )
+    )
+    assert not targets[0]
+    assert not targets[-1]
+
+
 def test_symbolic_write_loss_updates_the_gated_classifier() -> None:
     torch.manual_seed(29)
     vocabulary, _ = make_examples()
@@ -222,6 +261,37 @@ def test_symbolic_write_loss_updates_the_gated_classifier() -> None:
 
     assert all(torch.isfinite(torch.tensor(losses)))
     assert not torch.equal(decoder.bank.write_score.weight, before)
+
+
+def test_symbolic_write_loss_accepts_a_single_class_batch() -> None:
+    torch.manual_seed(31)
+    vocabulary, examples = make_examples()
+    example = examples[0]
+    segment_count = (len(example.input_ids) + 1) // 2
+    labeled = EncodedQAExample(
+        input_ids=example.input_ids,
+        answer_id=example.answer_id,
+        source_example_id=example.source_example_id,
+        segment_write_targets=(True,) * segment_count,
+    )
+    decoder = make_gated_decoder(len(vocabulary))
+    optimizer = torch.optim.AdamW(decoder.parameters(), lr=0.01)
+
+    losses = train_continuous_answer_supervision(
+        decoder,
+        optimizer,
+        [labeled],
+        steps=1,
+        batch_size=1,
+        gradient_clip_norm=1.0,
+        pad_id=vocabulary.token_to_id["<pad>"],
+        device="cpu",
+        seed=9,
+        write_loss_weight=1.0,
+    )
+
+    assert len(losses) == 1
+    assert torch.isfinite(torch.tensor(losses[0]))
 
 
 def test_continuous_training_updates_the_compressor() -> None:

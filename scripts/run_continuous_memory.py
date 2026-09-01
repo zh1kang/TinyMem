@@ -37,6 +37,7 @@ from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.checkpointing import load_checkpoint, save_checkpoint
 from tinymem.training.continuous import (
+    encode_qa_with_distributed_facts,
     encode_qa_with_token_distractors,
     qa1_requires_cross_segment_memory,
     train_continuous_answer_supervision,
@@ -77,6 +78,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--max-prefix-distractor-tokens",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--max-distributed-distractor-tokens",
         type=int,
         default=0,
     )
@@ -167,6 +173,15 @@ def main() -> None:
         raise ValueError("maximum training distractor tokens must be nonnegative")
     if args.max_prefix_distractor_tokens < 0:
         raise ValueError("maximum prefix distractor tokens must be nonnegative")
+    if args.max_distributed_distractor_tokens < 0:
+        raise ValueError("maximum distributed distractor tokens must be nonnegative")
+    if args.max_distributed_distractor_tokens and (
+        args.max_training_distractor_tokens
+        or args.max_prefix_distractor_tokens
+    ):
+        raise ValueError(
+            "distributed distractors cannot be combined with prefix or suffix mode"
+        )
     if args.write_loss_weight < 0:
         raise ValueError("write loss weight must be nonnegative")
     if args.write_loss_weight > 0 and args.memory_update != "gated":
@@ -251,6 +266,7 @@ def main() -> None:
     if (
         args.max_training_distractor_tokens
         or args.max_prefix_distractor_tokens
+        or args.max_distributed_distractor_tokens
     ):
         wikitext_root = repository_root / "data/raw/wikitext2"
         training_filler_ids = vocabulary.encode(
@@ -268,108 +284,168 @@ def main() -> None:
         maximum_filler = max(
             args.max_training_distractor_tokens,
             args.max_prefix_distractor_tokens,
+            args.max_distributed_distractor_tokens,
         )
         if min(len(training_filler_ids), len(validation_filler_ids)) < (
             maximum_filler
         ):
             raise ValueError("WikiText filler is shorter than the requested delay")
-        suffix_delay_levels = tuple(
-            range(
-                0,
-                args.max_training_distractor_tokens + 1,
-                args.segment_length,
-            )
-        )
-        if suffix_delay_levels[-1] != args.max_training_distractor_tokens:
-            suffix_delay_levels = (
-                *suffix_delay_levels,
-                args.max_training_distractor_tokens,
-            )
-        prefix_delay_levels = tuple(
-            range(
-                0,
-                args.max_prefix_distractor_tokens + 1,
-                args.segment_length,
-            )
-        )
-        if prefix_delay_levels[-1] != args.max_prefix_distractor_tokens:
-            prefix_delay_levels = (
-                *prefix_delay_levels,
-                args.max_prefix_distractor_tokens,
-            )
         delayed_training = []
-        eligible_index = 0
-        for example in train_examples:
-            if not qa1_requires_cross_segment_memory(
-                example,
-                vocabulary,
-                segment_length=args.segment_length,
-            ):
-                continue
-            suffix_delay = suffix_delay_levels[
-                eligible_index % len(suffix_delay_levels)
-            ]
-            prefix_delay = prefix_delay_levels[
-                (eligible_index // len(suffix_delay_levels))
-                % len(prefix_delay_levels)
-            ]
-            prefix_start = (eligible_index * args.segment_length) % (
-                len(training_filler_ids) - prefix_delay + 1
-            )
-            suffix_start = (
-                (eligible_index + len(train_examples)) * args.segment_length
-            ) % (
-                len(training_filler_ids) - suffix_delay + 1
-            )
-            delayed_training.append(
-                encode_qa_with_token_distractors(
-                    example,
-                    vocabulary,
-                    prefix_distractor_ids=training_filler_ids[
-                        prefix_start : prefix_start + prefix_delay
-                    ],
-                    suffix_distractor_ids=training_filler_ids[
-                        suffix_start : suffix_start + suffix_delay
-                    ],
-                    segment_length=args.segment_length,
+        if args.max_distributed_distractor_tokens:
+            delay_levels = tuple(
+                range(
+                    0,
+                    args.max_distributed_distractor_tokens + 1,
+                    args.segment_length,
                 )
             )
-            eligible_index += 1
-        memory_curriculum = delayed_training
+            if delay_levels[-1] != args.max_distributed_distractor_tokens:
+                delay_levels = (
+                    *delay_levels,
+                    args.max_distributed_distractor_tokens,
+                )
+            eligible_index = 0
+            for example in train_examples:
+                if not qa1_requires_cross_segment_memory(
+                    example,
+                    vocabulary,
+                    segment_length=args.segment_length,
+                ):
+                    continue
+                delay = delay_levels[eligible_index % len(delay_levels)]
+                start = (eligible_index * args.segment_length) % (
+                    len(training_filler_ids) - delay + 1
+                )
+                delayed_training.append(
+                    encode_qa_with_distributed_facts(
+                        example,
+                        vocabulary,
+                        distractor_ids=training_filler_ids[start : start + delay],
+                        segment_length=args.segment_length,
+                        gap_rotation=eligible_index,
+                    )
+                )
+                eligible_index += 1
 
-        eligible_index = 0
-        prefix_delay = args.max_prefix_distractor_tokens
-        suffix_delay = args.max_training_distractor_tokens
-        for example in validation_examples:
-            if not qa1_requires_cross_segment_memory(
-                example,
-                vocabulary,
-                segment_length=args.segment_length,
-            ):
-                continue
-            prefix_start = (eligible_index * args.segment_length) % (
-                len(validation_filler_ids) - prefix_delay + 1
-            )
-            suffix_start = (
-                (eligible_index + len(validation_examples))
-                * args.segment_length
-            ) % (
-                len(validation_filler_ids) - suffix_delay + 1
-            )
-            delayed_validation_curriculum.append(
-                encode_qa_with_token_distractors(
+            delay = args.max_distributed_distractor_tokens
+            eligible_index = 0
+            for example in validation_examples:
+                if not qa1_requires_cross_segment_memory(
                     example,
                     vocabulary,
-                    prefix_distractor_ids=validation_filler_ids[
-                        prefix_start : prefix_start + prefix_delay
-                    ],
-                    suffix_distractor_ids=validation_filler_ids[
-                        suffix_start : suffix_start + suffix_delay
-                    ],
                     segment_length=args.segment_length,
+                ):
+                    continue
+                start = (eligible_index * args.segment_length) % (
+                    len(validation_filler_ids) - delay + 1
+                )
+                delayed_validation_curriculum.append(
+                    encode_qa_with_distributed_facts(
+                        example,
+                        vocabulary,
+                        distractor_ids=validation_filler_ids[start : start + delay],
+                        segment_length=args.segment_length,
+                        gap_rotation=eligible_index,
+                    )
+                )
+                eligible_index += 1
+        else:
+            suffix_delay_levels = tuple(
+                range(
+                    0,
+                    args.max_training_distractor_tokens + 1,
+                    args.segment_length,
                 )
             )
-            eligible_index += 1
+            if suffix_delay_levels[-1] != args.max_training_distractor_tokens:
+                suffix_delay_levels = (
+                    *suffix_delay_levels,
+                    args.max_training_distractor_tokens,
+                )
+            prefix_delay_levels = tuple(
+                range(
+                    0,
+                    args.max_prefix_distractor_tokens + 1,
+                    args.segment_length,
+                )
+            )
+            if prefix_delay_levels[-1] != args.max_prefix_distractor_tokens:
+                prefix_delay_levels = (
+                    *prefix_delay_levels,
+                    args.max_prefix_distractor_tokens,
+                )
+            eligible_index = 0
+            for example in train_examples:
+                if not qa1_requires_cross_segment_memory(
+                    example,
+                    vocabulary,
+                    segment_length=args.segment_length,
+                ):
+                    continue
+                suffix_delay = suffix_delay_levels[
+                    eligible_index % len(suffix_delay_levels)
+                ]
+                prefix_delay = prefix_delay_levels[
+                    (eligible_index // len(suffix_delay_levels))
+                    % len(prefix_delay_levels)
+                ]
+                prefix_start = (eligible_index * args.segment_length) % (
+                    len(training_filler_ids) - prefix_delay + 1
+                )
+                suffix_start = (
+                    (eligible_index + len(train_examples)) * args.segment_length
+                ) % (
+                    len(training_filler_ids) - suffix_delay + 1
+                )
+                delayed_training.append(
+                    encode_qa_with_token_distractors(
+                        example,
+                        vocabulary,
+                        prefix_distractor_ids=training_filler_ids[
+                            prefix_start : prefix_start + prefix_delay
+                        ],
+                        suffix_distractor_ids=training_filler_ids[
+                            suffix_start : suffix_start + suffix_delay
+                        ],
+                        segment_length=args.segment_length,
+                    )
+                )
+                eligible_index += 1
+
+            eligible_index = 0
+            prefix_delay = args.max_prefix_distractor_tokens
+            suffix_delay = args.max_training_distractor_tokens
+            for example in validation_examples:
+                if not qa1_requires_cross_segment_memory(
+                    example,
+                    vocabulary,
+                    segment_length=args.segment_length,
+                ):
+                    continue
+                prefix_start = (eligible_index * args.segment_length) % (
+                    len(validation_filler_ids) - prefix_delay + 1
+                )
+                suffix_start = (
+                    (eligible_index + len(validation_examples))
+                    * args.segment_length
+                ) % (
+                    len(validation_filler_ids) - suffix_delay + 1
+                )
+                delayed_validation_curriculum.append(
+                    encode_qa_with_token_distractors(
+                        example,
+                        vocabulary,
+                        prefix_distractor_ids=validation_filler_ids[
+                            prefix_start : prefix_start + prefix_delay
+                        ],
+                        suffix_distractor_ids=validation_filler_ids[
+                            suffix_start : suffix_start + suffix_delay
+                        ],
+                        segment_length=args.segment_length,
+                    )
+                )
+                eligible_index += 1
+        memory_curriculum = delayed_training
 
     losses = []
     if args.memory_warmup_steps:
@@ -585,6 +661,9 @@ def main() -> None:
             args.max_training_distractor_tokens
         ),
         "max_prefix_distractor_tokens": args.max_prefix_distractor_tokens,
+        "max_distributed_distractor_tokens": (
+            args.max_distributed_distractor_tokens
+        ),
         "write_loss_weight": args.write_loss_weight,
         "segment_length": args.segment_length,
         "capacity": args.capacity,
