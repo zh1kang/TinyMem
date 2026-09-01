@@ -35,6 +35,25 @@ def test_transformer_preserves_logit_shape() -> None:
     assert logits.shape == (2, 7, 32)
 
 
+def test_transformer_exposes_final_hidden_states() -> None:
+    model = DecoderOnlyTransformer(make_config())
+    input_ids = torch.randint(0, 32, (2, 7))
+
+    hidden_states = model.forward_hidden(input_ids)
+
+    assert hidden_states.shape == (2, 7, 16)
+
+
+def test_transformer_logits_are_projected_hidden_states() -> None:
+    model = DecoderOnlyTransformer(make_config()).eval()
+    input_ids = torch.randint(0, 32, (2, 7))
+
+    hidden_states = model.forward_hidden(input_ids)
+    logits = model(input_ids)
+
+    torch.testing.assert_close(logits, model.lm_head(hidden_states))
+
+
 def test_transformer_ties_embedding_and_output_weights() -> None:
     model = DecoderOnlyTransformer(make_config(tie_embeddings=True))
 

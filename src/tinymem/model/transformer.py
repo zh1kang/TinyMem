@@ -58,6 +58,26 @@ class DecoderOnlyTransformer(nn.Module):
     ) -> torch.Tensor:
         """Return vocabulary logits for every input position."""
 
+        hidden_states = self.forward_hidden(
+            input_ids,
+            position_offset=position_offset,
+            caches=caches,
+            attention_observer=attention_observer,
+            memory=memory,
+        )
+        return self.lm_head(hidden_states)
+
+    def forward_hidden(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        position_offset: int = 0,
+        caches: list[KVCache] | None = None,
+        attention_observer: AttentionObserver | None = None,
+        memory: AttentionMemory | None = None,
+    ) -> torch.Tensor:
+        """Return final normalized hidden states for every input position."""
+
         if not isinstance(input_ids, torch.Tensor):
             raise TypeError(
                 f"input_ids must be a torch.Tensor, got {type(input_ids)}"
@@ -125,6 +145,4 @@ class DecoderOnlyTransformer(nn.Module):
                     memory=memory,
                 )
         hidden_states = self.final_norm(hidden_states)
-        logits = self.lm_head(hidden_states)
-
-        return logits
+        return hidden_states
