@@ -57,24 +57,73 @@ class ContinuousMemoryResult:
 
 
 @dataclass(frozen=True)
+class WriteDecisionResult:
+    """Store binary write-selection counts for labeled segments."""
+
+    true_positive: int
+    false_positive: int
+    false_negative: int
+    true_negative: int
+
+    @property
+    def accuracy(self) -> float:
+        total = (
+            self.true_positive
+            + self.false_positive
+            + self.false_negative
+            + self.true_negative
+        )
+        return (self.true_positive + self.true_negative) / total
+
+    @property
+    def precision(self) -> float:
+        predicted_positive = self.true_positive + self.false_positive
+        if predicted_positive == 0:
+            return 0.0
+        return self.true_positive / predicted_positive
+
+    @property
+    def recall(self) -> float:
+        actual_positive = self.true_positive + self.false_negative
+        if actual_positive == 0:
+            return 0.0
+        return self.true_positive / actual_positive
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "true_positive": self.true_positive,
+            "false_positive": self.false_positive,
+            "false_negative": self.false_negative,
+            "true_negative": self.true_negative,
+            "accuracy": self.accuracy,
+            "precision": self.precision,
+            "recall": self.recall,
+        }
+
+
+@dataclass(frozen=True)
 class ContinuousAnswerResult:
     """Store exact answer accuracy for one memory intervention."""
 
     intervention: str
     correct: int
     count: int
+    writes: WriteDecisionResult | None = None
 
     @property
     def accuracy(self) -> float:
         return self.correct / self.count
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "intervention": self.intervention,
             "correct": self.correct,
             "count": self.count,
             "accuracy": self.accuracy,
         }
+        if self.writes is not None:
+            document["writes"] = self.writes.to_dict()
+        return document
 
 
 def drop_memory(memory: AttentionMemory) -> AttentionMemory:
@@ -180,6 +229,17 @@ def evaluate_continuous_answers(
     was_training = decoder.training
     decoder.eval()
     correct = 0
+    has_write_targets = all(
+        example.segment_write_targets is not None for example in examples
+    )
+    if not has_write_targets and any(
+        example.segment_write_targets is not None for example in examples
+    ):
+        raise ValueError("write targets must be present for every example or none")
+    true_positive = 0
+    false_positive = 0
+    false_negative = 0
+    true_negative = 0
     try:
         for batch_slice in batches:
             batch = examples[batch_slice]
@@ -206,13 +266,39 @@ def evaluate_continuous_answers(
                 int(prediction == example.answer_id)
                 for prediction, example in zip(predictions, batch, strict=True)
             )
+            if has_write_targets:
+                for row, example in enumerate(batch):
+                    targets = example.segment_write_targets
+                    assert targets is not None
+                    expected_count = (
+                        len(example.input_ids) + decoder.segment_length - 1
+                    ) // decoder.segment_length
+                    if len(targets) != expected_count:
+                        raise ValueError(
+                            "segment write targets must match the encoded sequence"
+                        )
+                    actual = output.writes_applied[row, :expected_count].cpu()
+                    expected = torch.tensor(targets, dtype=torch.bool)
+                    true_positive += int((actual & expected).sum())
+                    false_positive += int((actual & ~expected).sum())
+                    false_negative += int((~actual & expected).sum())
+                    true_negative += int((~actual & ~expected).sum())
     finally:
         decoder.train(was_training)
 
+    writes = None
+    if has_write_targets:
+        writes = WriteDecisionResult(
+            true_positive=true_positive,
+            false_positive=false_positive,
+            false_negative=false_negative,
+            true_negative=true_negative,
+        )
     return ContinuousAnswerResult(
         intervention=intervention_name,
         correct=correct,
         count=len(examples),
+        writes=writes,
     )
 
 

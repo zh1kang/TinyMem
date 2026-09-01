@@ -22,6 +22,7 @@ class EncodedQAExample:
     input_ids: tuple[int, ...]
     answer_id: int
     source_example_id: str
+    segment_write_targets: tuple[bool, ...] | None = None
 
 
 def format_qa_prompt(example: ReasoningExample) -> str:

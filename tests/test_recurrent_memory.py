@@ -14,7 +14,7 @@ def test_recurrent_bank_evicts_oldest_slot_and_appends_summary() -> None:
     summary = torch.tensor([[[4.0, 4.0]]])
     summary_valid = torch.tensor([[True]])
 
-    next_memory, next_valid, write_applied = bank(
+    next_memory, next_valid, write_applied, write_logits = bank(
         memory,
         memory_valid,
         summary,
@@ -25,6 +25,7 @@ def test_recurrent_bank_evicts_oldest_slot_and_appends_summary() -> None:
     assert torch.equal(next_memory, expected_memory)
     assert torch.equal(next_valid, torch.tensor([[True, True, True]]))
     assert write_applied.item()
+    assert write_logits is None
 
 
 def test_recurrent_bank_appends_multiple_summaries_together() -> None:
@@ -34,7 +35,7 @@ def test_recurrent_bank_appends_multiple_summaries_together() -> None:
     summary = torch.tensor([[[5.0], [6.0]]])
     summary_valid = torch.ones(1, 2, dtype=torch.bool)
 
-    next_memory, next_valid, write_applied = bank(
+    next_memory, next_valid, write_applied, _ = bank(
         memory,
         memory_valid,
         summary,
@@ -66,7 +67,7 @@ def test_recurrent_bank_keeps_rows_with_invalid_summaries_unchanged() -> None:
     summary = torch.tensor([[[4.0]], [[40.0]]])
     summary_valid = torch.tensor([[True], [False]])
 
-    next_memory, next_valid, write_applied = bank(
+    next_memory, next_valid, write_applied, _ = bank(
         memory,
         memory_valid,
         summary,
@@ -88,7 +89,7 @@ def test_recurrent_bank_preserves_fixed_shape(capacity: int) -> None:
     summary = torch.ones(2, 1, 4)
     summary_valid = torch.ones(2, 1, dtype=torch.bool)
 
-    next_memory, next_valid, _ = bank(
+    next_memory, next_valid, _, _ = bank(
         memory,
         memory_valid,
         summary,
@@ -131,7 +132,12 @@ def test_recurrent_bank_preserves_gradient_paths_for_selected_values() -> None:
     summary = torch.tensor([[[4.0]], [[40.0]]], requires_grad=True)
     summary_valid = torch.tensor([[True], [False]])
 
-    next_memory, _, _ = bank(memory, memory_valid, summary, summary_valid)
+    next_memory, _, _, _ = bank(
+        memory,
+        memory_valid,
+        summary,
+        summary_valid,
+    )
     next_memory.sum().backward()
 
     assert memory.grad is not None
@@ -152,7 +158,7 @@ def test_gated_bank_preserves_rows_rejected_by_the_write_score() -> None:
     summary = torch.tensor([[[3.0]], [[-3.0]]])
     summary_valid = torch.ones(2, 1, dtype=torch.bool)
 
-    next_memory, next_valid, write_applied = bank(
+    next_memory, next_valid, write_applied, write_logits = bank(
         memory,
         memory_valid,
         summary,
@@ -163,6 +169,7 @@ def test_gated_bank_preserves_rows_rejected_by_the_write_score() -> None:
     assert torch.equal(next_memory[1], memory[1])
     assert next_valid.all()
     assert torch.equal(write_applied, torch.tensor([[True], [False]]))
+    assert write_logits.shape == (2, 1)
 
 
 def test_gated_bank_write_score_receives_a_straight_through_gradient() -> None:
@@ -175,7 +182,7 @@ def test_gated_bank_write_score_receives_a_straight_through_gradient() -> None:
     summary = torch.tensor([[[4.0]]])
     summary_valid = torch.ones(1, 1, dtype=torch.bool)
 
-    next_memory, _, _ = bank(
+    next_memory, _, _, write_logits = bank(
         memory,
         memory_valid,
         summary,
@@ -183,6 +190,7 @@ def test_gated_bank_write_score_receives_a_straight_through_gradient() -> None:
     )
     next_memory.sum().backward()
 
+    assert write_logits.shape == (1, 1)
     assert bank.write_score.weight.grad is not None
     assert torch.count_nonzero(bank.write_score.weight.grad) > 0
 

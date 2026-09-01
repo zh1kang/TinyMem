@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 import torch
 
@@ -173,3 +175,45 @@ def test_encoded_validation_evaluation_rejects_single_item_shuffle_batches() -> 
             device="cpu",
             memory_intervention=shuffle_memory,
         )
+
+
+def test_encoded_validation_evaluation_counts_write_decisions() -> None:
+    examples = parse_babilong_records(
+        [
+            {
+                "input": "Mary moved to the kitchen.",
+                "question": "Where is Mary? ",
+                "target": "kitchen",
+            },
+            {
+                "input": "John moved to the office.",
+                "question": "Where is John? ",
+                "target": "office",
+            },
+        ],
+        task_id="qa1",
+        split="validation",
+        source_name="fixture.txt",
+    )
+    vocabulary = build_qa_vocabulary(examples)
+    encoded = []
+    expected_segments = 0
+    for example in examples:
+        item = encode_qa_example(example, vocabulary)
+        segment_count = (len(item.input_ids) + 1) // 2
+        targets = (True, *(False for _ in range(segment_count - 1)))
+        encoded.append(replace(item, segment_write_targets=targets))
+        expected_segments += segment_count
+
+    result = evaluate_continuous_answers(
+        make_decoder(len(vocabulary)),
+        encoded,
+        batch_size=2,
+        pad_id=vocabulary.token_to_id["<pad>"],
+        device="cpu",
+    )
+
+    assert result.writes is not None
+    assert result.writes.true_positive == 2
+    assert result.writes.false_positive == expected_segments - 2
+    assert result.writes.false_negative == 0

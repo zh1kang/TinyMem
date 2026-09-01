@@ -4,6 +4,7 @@ from numbers import Integral
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 
 class RecurrentMemoryBank(nn.Module):
@@ -19,6 +20,7 @@ class RecurrentMemoryBank(nn.Module):
         next_memory:       [batch, capacity, model_width]
         next_memory_valid: [batch, capacity]
         write_applied:     [batch, 1]
+        write_logits:      [batch, 1] for learned gates, otherwise None
     """
 
     def __init__(self, *, capacity: int, model_width: int) -> None:
@@ -42,7 +44,12 @@ class RecurrentMemoryBank(nn.Module):
         memory_valid: torch.Tensor,
         summary: torch.Tensor,
         summary_valid: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+    ]:
         """Return the next bank without modifying any input tensor in place."""
         tensors = {
             "memory": memory,
@@ -125,7 +132,7 @@ class RecurrentMemoryBank(nn.Module):
             shifted_valid,
             memory_valid,
         )
-        return next_memory, next_memory_valid, row_valid
+        return next_memory, next_memory_valid, row_valid, None
 
 
 class GatedRecurrentMemoryBank(RecurrentMemoryBank):
@@ -143,16 +150,17 @@ class GatedRecurrentMemoryBank(RecurrentMemoryBank):
         memory_valid: torch.Tensor,
         summary: torch.Tensor,
         summary_valid: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Apply a straight-through learned write decision per batch row."""
-        shifted_memory, shifted_valid, row_valid = super().forward(
+        shifted_memory, shifted_valid, row_valid, _ = super().forward(
             memory,
             memory_valid,
             summary,
             summary_valid,
         )
-        candidate = summary.mean(dim=1)
-        write_probability = torch.sigmoid(self.write_score(candidate))
+        candidate = F.normalize(summary.mean(dim=1), dim=-1)
+        write_logits = self.write_score(candidate)
+        write_probability = torch.sigmoid(write_logits)
         hard_write = (write_probability >= 0.5) & row_valid
         straight_through_write = (
             hard_write.to(dtype=write_probability.dtype)
@@ -167,4 +175,4 @@ class GatedRecurrentMemoryBank(RecurrentMemoryBank):
             shifted_valid,
             memory_valid,
         )
-        return next_memory, next_valid, hard_write
+        return next_memory, next_valid, hard_write, write_logits

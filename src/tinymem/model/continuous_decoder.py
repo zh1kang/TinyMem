@@ -25,6 +25,8 @@ class SegmentedContinuousOutput:
     memory: torch.Tensor
     memory_valid: torch.Tensor
     memory_positions: torch.Tensor
+    writes_applied: torch.Tensor
+    write_logits: torch.Tensor | None
 
 
 class SegmentedContinuousDecoder(nn.Module):
@@ -169,6 +171,8 @@ class SegmentedContinuousDecoder(nn.Module):
             dtype=self.model.token_embedding.weight.dtype,
         )
         segment_logits = []
+        segment_writes = []
+        segment_write_logits = []
         for offset in range(0, input_ids.shape[1], self.segment_length):
             end = offset + self.segment_length
             segment_ids = input_ids[:, offset:end]
@@ -207,7 +211,7 @@ class SegmentedContinuousDecoder(nn.Module):
                 segment_valid,
                 position_offset=offset,
             ).expand(-1, summary.shape[1])
-            memory, memory_valid, write_applied = self.bank(
+            memory, memory_valid, write_applied, write_logits = self.bank(
                 memory,
                 memory_valid,
                 summary,
@@ -218,10 +222,19 @@ class SegmentedContinuousDecoder(nn.Module):
                 summary_positions,
                 write_applied,
             )
+            segment_writes.append(write_applied)
+            if write_logits is not None:
+                segment_write_logits.append(write_logits)
 
         return SegmentedContinuousOutput(
             logits=torch.cat(segment_logits, dim=1),
             memory=memory,
             memory_valid=memory_valid,
             memory_positions=memory_positions,
+            writes_applied=torch.cat(segment_writes, dim=1),
+            write_logits=(
+                torch.cat(segment_write_logits, dim=1)
+                if segment_write_logits
+                else None
+            ),
         )

@@ -7,7 +7,10 @@ from tinymem.memory.continuous import (
     MeanPoolMemoryCompressor,
     MultiSlotAttentionMemoryCompressor,
 )
-from tinymem.memory.recurrent_memory import RecurrentMemoryBank
+from tinymem.memory.recurrent_memory import (
+    GatedRecurrentMemoryBank,
+    RecurrentMemoryBank,
+)
 from tinymem.model.config import ModelConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.kv_cache import KVCache
@@ -99,6 +102,34 @@ def test_segmented_decoder_appends_multiple_summaries_and_positions() -> None:
 
     assert output.memory_valid.all()
     assert torch.equal(output.memory_positions, torch.tensor([[1, 1, 3, 3]]))
+    assert output.writes_applied.shape == (1, 2)
+    assert output.write_logits is None
+
+
+def test_segmented_decoder_exposes_gated_write_logits() -> None:
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MultiSlotAttentionMemoryCompressor(8, summary_slots=1),
+        GatedRecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+    )
+
+    output = decoder(
+        torch.tensor([[1, 2, 3, 4]]),
+        torch.ones(1, 4, dtype=torch.bool),
+    )
+
+    assert output.writes_applied.shape == (1, 2)
+    assert output.write_logits is not None
+    assert output.write_logits.shape == (1, 2)
 
 
 def test_first_segment_logits_use_only_initial_empty_memory() -> None:
