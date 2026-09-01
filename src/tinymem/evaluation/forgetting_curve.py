@@ -80,6 +80,24 @@ def qa1_evidence_delay_tokens(
     return len(vocabulary.encode(trailing_prompt))
 
 
+def qa1_evidence_token_positions(
+    example: ReasoningExample,
+    vocabulary: ControlledVocabulary,
+) -> tuple[int, ...]:
+    """Return absolute prompt positions occupied by the qa1 evidence fact."""
+    if not isinstance(vocabulary, ControlledVocabulary):
+        raise TypeError("vocabulary must be a ControlledVocabulary")
+    evidence = qa1_answer_evidence(example)
+    prefix_ids = vocabulary.encode(example.context[: evidence.start_char])
+    evidence_ids = vocabulary.encode(evidence.text)
+    start = 1 + len(prefix_ids)
+    positions = tuple(range(start, start + len(evidence_ids)))
+    prompt_ids = vocabulary.encode(format_qa_prompt(example), add_bos=True)
+    if [prompt_ids[position] for position in positions] != evidence_ids:
+        raise ValueError("evidence character span does not align with prompt tokens")
+    return positions
+
+
 def delay_label(delay: int, limits: tuple[int, ...] = DEFAULT_DELAY_LIMITS) -> str:
     """Return the inclusive upper-bound label for one token delay."""
     if isinstance(delay, bool) or not isinstance(delay, int):

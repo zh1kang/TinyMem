@@ -9,6 +9,7 @@ from tinymem.evaluation.forgetting_curve import (
     evaluate_local_forgetting_curve,
     qa1_answer_evidence,
     qa1_evidence_delay_tokens,
+    qa1_evidence_token_positions,
 )
 from tinymem.model.config import ModelConfig
 from tinymem.model.streaming import StreamingDecoder
@@ -40,6 +41,23 @@ def test_qa1_delay_uses_the_last_queried_person_fact() -> None:
 
     assert evidence.text == "Mary travelled to the kitchen."
     assert delay == 8
+
+
+def test_qa1_evidence_positions_select_the_exact_fact_tokens() -> None:
+    example = make_example()
+    vocabulary = ControlledVocabulary.from_texts(
+        [example.context, example.question, example.answer]
+    )
+
+    positions = qa1_evidence_token_positions(example, vocabulary)
+    prompt_ids = vocabulary.encode(
+        f"{example.context}\n{example.question} ",
+        add_bos=True,
+    )
+
+    assert vocabulary.decode(prompt_ids[position] for position in positions) == (
+        "Mary travelled to the kitchen."
+    )
 
 
 @pytest.mark.parametrize(
