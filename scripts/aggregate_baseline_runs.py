@@ -42,12 +42,11 @@ def plot_results(result: dict[str, object], destination: Path) -> None:
     figure, axis = plt.subplots(figsize=(9, 4.8))
     bars = axis.bar(names, means, yerr=errors, capsize=4)
     axis.axhline(1 / 6, color="gray", linestyle="--", label="chance (1/6)")
-    for bar, row in zip(bars, baselines, strict=True):
+    for bar, error, row in zip(bars, errors, baselines, strict=True):
+        label_y = max(bar.get_height() + error + 0.025, 0.19)
         axis.annotate(
             f"{int(row['memory_bytes']):,} B",
-            (bar.get_x() + bar.get_width() / 2, bar.get_height()),
-            xytext=(0, 8),
-            textcoords="offset points",
+            (bar.get_x() + bar.get_width() / 2, label_y),
             ha="center",
             fontsize=8,
         )
