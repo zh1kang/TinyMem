@@ -247,6 +247,8 @@ def main() -> None:
         seed=args.seed,
         memory=memory_config,
     )
+    matched_checkpoint_config = checkpoint_config.to_dict()
+    matched_checkpoint_config.pop("seed")
     commit = current_git_commit(repository_root)
     run_directory = create_run_directory(
         repository_root / args.artifact_root,
@@ -266,6 +268,7 @@ def main() -> None:
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": _file_sha256(checkpoint_path),
         "checkpoint_step": checkpoint_step,
+        "matched_checkpoint_config": matched_checkpoint_config,
         "manifest_sha256": json.loads(
             (repository_root / "data/installed.lock.json").read_text()
         )["manifest_sha256"],
