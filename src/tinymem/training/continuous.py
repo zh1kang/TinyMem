@@ -85,6 +85,47 @@ def collate_segmented_answer_supervision(
     return input_ids, target_ids, token_valid
 
 
+def encode_qa_with_token_distractor(
+    example: ReasoningExample,
+    vocabulary: ControlledVocabulary,
+    distractor_ids: Sequence[int],
+) -> EncodedQAExample:
+    """Insert encoded distractor tokens between a context and its question."""
+    if not isinstance(example, ReasoningExample):
+        raise TypeError("example must be a ReasoningExample")
+    if not isinstance(vocabulary, ControlledVocabulary):
+        raise TypeError("vocabulary must be a ControlledVocabulary")
+    if not isinstance(distractor_ids, Sequence) or isinstance(
+        distractor_ids,
+        (str, bytes),
+    ):
+        raise TypeError("distractor_ids must be a sequence of integers")
+    if any(
+        isinstance(token_id, bool)
+        or not isinstance(token_id, int)
+        or not 0 <= token_id < len(vocabulary)
+        for token_id in distractor_ids
+    ):
+        raise ValueError("distractor token IDs must be valid vocabulary IDs")
+
+    prefix_ids = vocabulary.encode(
+        f"{example.context}\n",
+        add_bos=True,
+    )
+    question_ids = vocabulary.encode(f"\n{example.question} ")
+    answer_ids = vocabulary.encode(example.answer)
+    if len(answer_ids) != 1:
+        raise ValueError("controlled answer must encode to exactly one token")
+    answer_id = answer_ids[0]
+    return EncodedQAExample(
+        input_ids=tuple(
+            (*prefix_ids, *distractor_ids, *question_ids, answer_id)
+        ),
+        answer_id=answer_id,
+        source_example_id=example.source_example_id,
+    )
+
+
 def train_continuous_answer_supervision(
     decoder: SegmentedContinuousDecoder,
     optimizer: Optimizer,

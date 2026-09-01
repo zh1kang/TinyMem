@@ -207,7 +207,7 @@ class SegmentedContinuousDecoder(nn.Module):
                 segment_valid,
                 position_offset=offset,
             ).expand(-1, summary.shape[1])
-            memory, memory_valid = self.bank(
+            memory, memory_valid, write_applied = self.bank(
                 memory,
                 memory_valid,
                 summary,
@@ -216,7 +216,7 @@ class SegmentedContinuousDecoder(nn.Module):
             memory_positions = self._update_positions(
                 memory_positions,
                 summary_positions,
-                summary_valid,
+                write_applied,
             )
 
         return SegmentedContinuousOutput(

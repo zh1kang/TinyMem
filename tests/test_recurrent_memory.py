@@ -1,7 +1,10 @@
 import pytest
 import torch
 
-from tinymem.memory.recurrent_memory import RecurrentMemoryBank
+from tinymem.memory.recurrent_memory import (
+    GatedRecurrentMemoryBank,
+    RecurrentMemoryBank,
+)
 
 
 def test_recurrent_bank_evicts_oldest_slot_and_appends_summary() -> None:
@@ -11,7 +14,7 @@ def test_recurrent_bank_evicts_oldest_slot_and_appends_summary() -> None:
     summary = torch.tensor([[[4.0, 4.0]]])
     summary_valid = torch.tensor([[True]])
 
-    next_memory, next_valid = bank(
+    next_memory, next_valid, write_applied = bank(
         memory,
         memory_valid,
         summary,
@@ -21,6 +24,7 @@ def test_recurrent_bank_evicts_oldest_slot_and_appends_summary() -> None:
     expected_memory = torch.tensor([[[2.0, 2.0], [3.0, 3.0], [4.0, 4.0]]])
     assert torch.equal(next_memory, expected_memory)
     assert torch.equal(next_valid, torch.tensor([[True, True, True]]))
+    assert write_applied.item()
 
 
 def test_recurrent_bank_appends_multiple_summaries_together() -> None:
@@ -30,7 +34,7 @@ def test_recurrent_bank_appends_multiple_summaries_together() -> None:
     summary = torch.tensor([[[5.0], [6.0]]])
     summary_valid = torch.ones(1, 2, dtype=torch.bool)
 
-    next_memory, next_valid = bank(
+    next_memory, next_valid, write_applied = bank(
         memory,
         memory_valid,
         summary,
@@ -42,6 +46,7 @@ def test_recurrent_bank_appends_multiple_summaries_together() -> None:
         torch.tensor([[[3.0], [4.0], [5.0], [6.0]]]),
     )
     assert next_valid.all()
+    assert write_applied.item()
 
 
 def test_recurrent_bank_keeps_rows_with_invalid_summaries_unchanged() -> None:
@@ -61,7 +66,7 @@ def test_recurrent_bank_keeps_rows_with_invalid_summaries_unchanged() -> None:
     summary = torch.tensor([[[4.0]], [[40.0]]])
     summary_valid = torch.tensor([[True], [False]])
 
-    next_memory, next_valid = bank(
+    next_memory, next_valid, write_applied = bank(
         memory,
         memory_valid,
         summary,
@@ -72,6 +77,7 @@ def test_recurrent_bank_keeps_rows_with_invalid_summaries_unchanged() -> None:
     assert torch.equal(next_memory[1], memory[1])
     assert torch.equal(next_valid[0], torch.tensor([True, True, True]))
     assert torch.equal(next_valid[1], memory_valid[1])
+    assert torch.equal(write_applied, torch.tensor([[True], [False]]))
 
 
 @pytest.mark.parametrize("capacity", [1, 3, 5])
@@ -82,7 +88,7 @@ def test_recurrent_bank_preserves_fixed_shape(capacity: int) -> None:
     summary = torch.ones(2, 1, 4)
     summary_valid = torch.ones(2, 1, dtype=torch.bool)
 
-    next_memory, next_valid = bank(
+    next_memory, next_valid, _ = bank(
         memory,
         memory_valid,
         summary,
@@ -125,7 +131,7 @@ def test_recurrent_bank_preserves_gradient_paths_for_selected_values() -> None:
     summary = torch.tensor([[[4.0]], [[40.0]]], requires_grad=True)
     summary_valid = torch.tensor([[True], [False]])
 
-    next_memory, _ = bank(memory, memory_valid, summary, summary_valid)
+    next_memory, _, _ = bank(memory, memory_valid, summary, summary_valid)
     next_memory.sum().backward()
 
     assert memory.grad is not None
@@ -134,6 +140,51 @@ def test_recurrent_bank_preserves_gradient_paths_for_selected_values() -> None:
     assert torch.equal(summary.grad[0], torch.tensor([[1.0]]))
     assert torch.equal(memory.grad[1], torch.ones(3, 1))
     assert torch.equal(summary.grad[1], torch.zeros(1, 1))
+
+
+def test_gated_bank_preserves_rows_rejected_by_the_write_score() -> None:
+    bank = GatedRecurrentMemoryBank(capacity=2, model_width=1)
+    with torch.no_grad():
+        bank.write_score.weight.fill_(10.0)
+        bank.write_score.bias.zero_()
+    memory = torch.tensor([[[1.0], [2.0]], [[10.0], [20.0]]])
+    memory_valid = torch.ones(2, 2, dtype=torch.bool)
+    summary = torch.tensor([[[3.0]], [[-3.0]]])
+    summary_valid = torch.ones(2, 1, dtype=torch.bool)
+
+    next_memory, next_valid, write_applied = bank(
+        memory,
+        memory_valid,
+        summary,
+        summary_valid,
+    )
+
+    assert torch.equal(next_memory[0], torch.tensor([[2.0], [3.0]]))
+    assert torch.equal(next_memory[1], memory[1])
+    assert next_valid.all()
+    assert torch.equal(write_applied, torch.tensor([[True], [False]]))
+
+
+def test_gated_bank_write_score_receives_a_straight_through_gradient() -> None:
+    bank = GatedRecurrentMemoryBank(capacity=2, model_width=1)
+    with torch.no_grad():
+        bank.write_score.weight.zero_()
+        bank.write_score.bias.zero_()
+    memory = torch.tensor([[[1.0], [2.0]]])
+    memory_valid = torch.ones(1, 2, dtype=torch.bool)
+    summary = torch.tensor([[[4.0]]])
+    summary_valid = torch.ones(1, 1, dtype=torch.bool)
+
+    next_memory, _, _ = bank(
+        memory,
+        memory_valid,
+        summary,
+        summary_valid,
+    )
+    next_memory.sum().backward()
+
+    assert bank.write_score.weight.grad is not None
+    assert torch.count_nonzero(bank.write_score.weight.grad) > 0
 
 
 @pytest.mark.parametrize(

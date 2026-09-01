@@ -9,6 +9,7 @@ from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.continuous import (
     collate_segmented_answer_supervision,
+    encode_qa_with_token_distractor,
     qa1_requires_cross_segment_memory,
     train_continuous_answer_supervision,
 )
@@ -97,6 +98,32 @@ def test_memory_curriculum_requires_evidence_before_the_query_segment() -> None:
         examples[0],
         vocabulary,
         segment_length=128,
+    )
+
+
+def test_encoded_distractor_is_inserted_before_the_question() -> None:
+    vocabulary, _ = make_examples()
+    raw_example = parse_babi_lines(
+        [
+            "1 Mary moved to the kitchen.\n",
+            "2 Where is Mary?\tkitchen\t1\n",
+        ],
+        task_id="qa1",
+        split="train",
+        source_name="fixture.txt",
+    )[0]
+    distractor_ids = [vocabulary.token_to_id["<unk>"]] * 5
+
+    delayed = encode_qa_with_token_distractor(
+        raw_example,
+        vocabulary,
+        distractor_ids,
+    )
+
+    assert delayed.input_ids[-1] == delayed.answer_id
+    assert delayed.input_ids.count(vocabulary.token_to_id["<unk>"]) >= 5
+    assert len(delayed.input_ids) > len(
+        encode_qa_example(raw_example, vocabulary).input_ids
     )
 
 

@@ -18,6 +18,7 @@ class RecurrentMemoryBank(nn.Module):
     Outputs:
         next_memory:       [batch, capacity, model_width]
         next_memory_valid: [batch, capacity]
+        write_applied:     [batch, 1]
     """
 
     def __init__(self, *, capacity: int, model_width: int) -> None:
@@ -41,7 +42,7 @@ class RecurrentMemoryBank(nn.Module):
         memory_valid: torch.Tensor,
         summary: torch.Tensor,
         summary_valid: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return the next bank without modifying any input tensor in place."""
         tensors = {
             "memory": memory,
@@ -124,4 +125,46 @@ class RecurrentMemoryBank(nn.Module):
             shifted_valid,
             memory_valid,
         )
-        return next_memory, next_memory_valid
+        return next_memory, next_memory_valid, row_valid
+
+
+class GatedRecurrentMemoryBank(RecurrentMemoryBank):
+    """Learn when a candidate group should replace the oldest memory slots."""
+
+    def __init__(self, *, capacity: int, model_width: int) -> None:
+        super().__init__(capacity=capacity, model_width=model_width)
+        self.write_score = nn.Linear(self.model_width, 1)
+        nn.init.zeros_(self.write_score.weight)
+        nn.init.ones_(self.write_score.bias)
+
+    def forward(
+        self,
+        memory: torch.Tensor,
+        memory_valid: torch.Tensor,
+        summary: torch.Tensor,
+        summary_valid: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Apply a straight-through learned write decision per batch row."""
+        shifted_memory, shifted_valid, row_valid = super().forward(
+            memory,
+            memory_valid,
+            summary,
+            summary_valid,
+        )
+        candidate = summary.mean(dim=1)
+        write_probability = torch.sigmoid(self.write_score(candidate))
+        hard_write = (write_probability >= 0.5) & row_valid
+        straight_through_write = (
+            hard_write.to(dtype=write_probability.dtype)
+            + write_probability
+            - write_probability.detach()
+        )
+        next_memory = memory + straight_through_write.unsqueeze(-1) * (
+            shifted_memory - memory
+        )
+        next_valid = torch.where(
+            hard_write,
+            shifted_valid,
+            memory_valid,
+        )
+        return next_memory, next_valid, hard_write
