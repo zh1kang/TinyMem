@@ -7,6 +7,7 @@ from tinymem.model.attention import AttentionObserver
 from tinymem.model.block import TransformerBlock
 from tinymem.model.config import ModelConfig
 from tinymem.model.kv_cache import KVCache
+from tinymem.model.memory_input import AttentionMemory
 from tinymem.model.normalization import RMSNorm
 
 
@@ -53,6 +54,7 @@ class DecoderOnlyTransformer(nn.Module):
         position_offset: int = 0,
         caches: list[KVCache] | None = None,
         attention_observer: AttentionObserver | None = None,
+        memory: AttentionMemory | None = None,
     ) -> torch.Tensor:
         """Return vocabulary logits for every input position."""
 
@@ -83,6 +85,8 @@ class DecoderOnlyTransformer(nn.Module):
             raise ValueError(
                 f"position_offset must be nonnegative, got {position_offset}"
             )
+        if memory is not None and not isinstance(memory, AttentionMemory):
+            raise TypeError("memory must be an AttentionMemory or None")
         if caches is not None:
             if not isinstance(caches, list):
                 raise TypeError(f"caches must be a list or None, got {type(caches)}")
@@ -109,6 +113,7 @@ class DecoderOnlyTransformer(nn.Module):
                     hidden_states,
                     position_offset=position_offset,
                     attention_observer=attention_observer,
+                    memory=memory,
                 )
         else:
             for block, cache in zip(self.transformer_blocks, caches):
@@ -117,6 +122,7 @@ class DecoderOnlyTransformer(nn.Module):
                     position_offset=position_offset,
                     cache=cache,
                     attention_observer=attention_observer,
+                    memory=memory,
                 )
         hidden_states = self.final_norm(hidden_states)
         logits = self.lm_head(hidden_states)

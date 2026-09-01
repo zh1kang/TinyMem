@@ -8,6 +8,7 @@ from torch import nn
 from tinymem.model.attention import AttentionObserver, CausalSelfAttention
 from tinymem.model.feedforward import FeedForward
 from tinymem.model.kv_cache import KVCache
+from tinymem.model.memory_input import AttentionMemory
 from tinymem.model.normalization import RMSNorm
 
 
@@ -89,6 +90,7 @@ class TransformerBlock(nn.Module):
         position_offset: int = 0,
         cache: KVCache | None = None,
         attention_observer: AttentionObserver | None = None,
+        memory: AttentionMemory | None = None,
     ) -> torch.Tensor:
         """Apply two pre-normalized residual updates."""
 
@@ -102,13 +104,24 @@ class TransformerBlock(nn.Module):
             raise ValueError(
                 f"x last dimension must be {self.d_model}, got {x.shape[-1]}"
             )
+        if memory is not None and not isinstance(memory, AttentionMemory):
+            raise TypeError("memory must be an AttentionMemory or None")
 
         normalized = self.norm_attention(x)
+        normalized_memory = None
+        if memory is not None:
+            normalized_memory = AttentionMemory(
+                values=self.norm_attention(memory.values),
+                valid=memory.valid,
+                positions=memory.positions,
+            )
+
         attention_output = self.attention(
             normalized,
             position_offset=position_offset,
             cache=cache,
             attention_observer=attention_observer,
+            memory=normalized_memory,
         )
         x = x + attention_output
 
