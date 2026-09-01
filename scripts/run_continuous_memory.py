@@ -16,11 +16,15 @@ from tinymem.data.babilong import load_babilong_file
 from tinymem.data.vocabulary import SPECIAL_TOKENS, ControlledVocabulary
 from tinymem.evaluation.continuous_memory import (
     drop_memory,
+    evaluate_continuous_answers,
     evaluate_continuous_qa1,
     shuffle_memory,
     zero_memory,
 )
-from tinymem.memory.continuous import MeanPoolMemoryCompressor
+from tinymem.memory.continuous import (
+    AttentionPoolMemoryCompressor,
+    MeanPoolMemoryCompressor,
+)
 from tinymem.memory.recurrent_memory import RecurrentMemoryBank
 from tinymem.model.config import ExperimentConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
@@ -47,6 +51,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-clip-norm", type=float, default=1.0)
     parser.add_argument("--segment-length", type=int, default=128)
     parser.add_argument("--capacity", type=int, default=12)
+    parser.add_argument(
+        "--compressor",
+        choices=("mean", "attention"),
+        default="mean",
+    )
+    parser.add_argument(
+        "--evaluation-scope",
+        choices=("validation", "all"),
+        default="validation",
+    )
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument(
         "--max-eval-examples",
@@ -132,9 +146,14 @@ def main() -> None:
     if args.segment_length > model.config.max_local_tokens:
         raise ValueError("segment length must not exceed the base local window")
 
+    compressor_type = (
+        MeanPoolMemoryCompressor
+        if args.compressor == "mean"
+        else AttentionPoolMemoryCompressor
+    )
     decoder = SegmentedContinuousDecoder(
         model,
-        MeanPoolMemoryCompressor(model.config.d_model),
+        compressor_type(model.config.d_model),
         RecurrentMemoryBank(
             capacity=args.capacity,
             model_width=model.config.d_model,
@@ -164,6 +183,22 @@ def main() -> None:
     ]
     if not memory_curriculum:
         raise ValueError("no training examples cross a segment boundary")
+    validation_examples = load_babi_file(
+        babi_root / "qa1_valid.txt",
+        task_id="qa1",
+        split="validation",
+    )
+    validation_curriculum = [
+        encode_qa_example(example, vocabulary)
+        for example in validation_examples
+        if qa1_requires_cross_segment_memory(
+            example,
+            vocabulary,
+            segment_length=args.segment_length,
+        )
+    ]
+    if not validation_curriculum:
+        raise ValueError("no validation examples cross a segment boundary")
 
     losses = train_continuous_answer_supervision(
         decoder,
@@ -177,44 +212,76 @@ def main() -> None:
         seed=args.seed,
     )
 
-    babilong_examples = []
-    for context_length in ("1k", "2k", "4k", "8k"):
-        babilong_examples.extend(
-            load_babilong_file(
-                repository_root / f"data/raw/babilong/qa1/{context_length}.json",
-                task_id="qa1",
-                split="test",
-            )
-        )
-    if args.max_eval_examples:
-        babilong_examples = babilong_examples[: args.max_eval_examples]
-    evaluations = []
-    for name, intervention in (
+    interventions = (
         ("normal", None),
         ("drop", drop_memory),
         ("zero", zero_memory),
         ("shuffle", shuffle_memory),
-    ):
-        print(f"evaluating {name} memory...", flush=True)
-        evaluations.append(
-            evaluate_continuous_qa1(
+    )
+    validation_evaluations = []
+    for name, intervention in interventions:
+        print(f"evaluating validation with {name} memory...", flush=True)
+        validation_evaluations.append(
+            evaluate_continuous_answers(
                 decoder,
-                vocabulary,
-                babilong_examples,
+                validation_curriculum,
                 batch_size=args.eval_batch_size,
+                pad_id=vocabulary.token_to_id["<pad>"],
                 device=device,
                 intervention_name=name,
                 memory_intervention=intervention,
             )
         )
-
-    normal = evaluations[0]
-    counterfactual_utility = {
-        result.intervention: (
-            normal.outside_window_accuracy - result.outside_window_accuracy
-        )
-        for result in evaluations[1:]
+    validation_normal = validation_evaluations[0]
+    validation_utility = {
+        result.intervention: validation_normal.accuracy - result.accuracy
+        for result in validation_evaluations[1:]
     }
+    validation_exit_criteria_met = all(
+        utility > 0.0 for utility in validation_utility.values()
+    )
+
+    evaluations = []
+    if args.evaluation_scope == "all" and not validation_exit_criteria_met:
+        raise RuntimeError(
+            "validation memory utility must be positive before BABILong evaluation"
+        )
+    if args.evaluation_scope == "all":
+        babilong_examples = []
+        for context_length in ("1k", "2k", "4k", "8k"):
+            babilong_examples.extend(
+                load_babilong_file(
+                    repository_root
+                    / f"data/raw/babilong/qa1/{context_length}.json",
+                    task_id="qa1",
+                    split="test",
+                )
+            )
+        if args.max_eval_examples:
+            babilong_examples = babilong_examples[: args.max_eval_examples]
+        for name, intervention in interventions:
+            print(f"evaluating {name} memory...", flush=True)
+            evaluations.append(
+                evaluate_continuous_qa1(
+                    decoder,
+                    vocabulary,
+                    babilong_examples,
+                    batch_size=args.eval_batch_size,
+                    device=device,
+                    intervention_name=name,
+                    memory_intervention=intervention,
+                )
+            )
+
+    counterfactual_utility = {}
+    if evaluations:
+        normal = evaluations[0]
+        counterfactual_utility = {
+            result.intervention: (
+                normal.outside_window_accuracy - result.outside_window_accuracy
+            )
+            for result in evaluations[1:]
+        }
     config = replace(
         base_config,
         seed=args.seed,
@@ -247,7 +314,11 @@ def main() -> None:
         git_commit=commit,
     )
     result_document = {
-        "status": "development_single_seed",
+        "status": (
+            "development_single_seed"
+            if args.evaluation_scope == "all"
+            else "development_validation"
+        ),
         "task_id": "qa1",
         "device": str(device),
         "seed": args.seed,
@@ -258,7 +329,9 @@ def main() -> None:
             (repository_root / "data/installed.lock.json").read_text()
         )["manifest_sha256"],
         "training_examples": len(memory_curriculum),
+        "validation_examples": len(validation_curriculum),
         "training_steps": args.steps,
+        "compressor": args.compressor,
         "segment_length": args.segment_length,
         "capacity": args.capacity,
         "memory_bytes_per_example": args.capacity
@@ -269,6 +342,11 @@ def main() -> None:
             + 8
         ),
         "final_training_loss": losses[-1],
+        "validation_evaluations": [
+            result.to_dict() for result in validation_evaluations
+        ],
+        "validation_counterfactual_utility": validation_utility,
+        "validation_exit_criteria_met": validation_exit_criteria_met,
         "evaluations": [result.to_dict() for result in evaluations],
         "outside_window_counterfactual_utility": counterfactual_utility,
     }
@@ -284,7 +362,7 @@ def main() -> None:
         config=config,
         extra={
             "vocabulary": list(vocabulary.id_to_token),
-            "architecture": "segmented_continuous_mean_pool",
+            "architecture": f"segmented_continuous_{args.compressor}_pool",
         },
     )
     print(json.dumps(result_document, indent=2, sort_keys=True))

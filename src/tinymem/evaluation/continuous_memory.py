@@ -15,7 +15,8 @@ from tinymem.evaluation.forgetting_curve import (
 )
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.memory_input import AttentionMemory
-from tinymem.training.controlled_qa import format_qa_prompt
+from tinymem.training.continuous import collate_segmented_answer_supervision
+from tinymem.training.controlled_qa import EncodedQAExample, format_qa_prompt
 
 
 MemoryIntervention = Callable[[AttentionMemory], AttentionMemory]
@@ -52,6 +53,27 @@ class ContinuousMemoryResult:
             "outside_window_count": self.outside_window_count,
             "outside_window_accuracy": self.outside_window_accuracy,
             "curve": [bucket.to_dict() for bucket in self.curve],
+        }
+
+
+@dataclass(frozen=True)
+class ContinuousAnswerResult:
+    """Store exact answer accuracy for one memory intervention."""
+
+    intervention: str
+    correct: int
+    count: int
+
+    @property
+    def accuracy(self) -> float:
+        return self.correct / self.count
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "intervention": self.intervention,
+            "correct": self.correct,
+            "count": self.count,
+            "accuracy": self.accuracy,
         }
 
 
@@ -101,6 +123,99 @@ def _build_curve(
     return tuple(results)
 
 
+def _evaluation_batches(
+    count: int,
+    batch_size: int,
+    *,
+    require_pairs: bool,
+) -> tuple[slice, ...]:
+    if require_pairs and count < 2:
+        raise ValueError("shuffled-memory evaluation requires at least two examples")
+    if require_pairs and batch_size < 2:
+        raise ValueError("shuffled-memory evaluation requires batch size above one")
+    batches = [
+        slice(start, min(start + batch_size, count))
+        for start in range(0, count, batch_size)
+    ]
+    if require_pairs and len(batches) > 1:
+        final = batches[-1]
+        if final.stop - final.start == 1:
+            previous = batches[-2]
+            batches[-2:] = [slice(previous.start, final.stop)]
+    return tuple(batches)
+
+
+@torch.no_grad()
+def evaluate_continuous_answers(
+    decoder: SegmentedContinuousDecoder,
+    examples: Sequence[EncodedQAExample],
+    *,
+    batch_size: int,
+    pad_id: int,
+    device: torch.device | str,
+    intervention_name: str = "normal",
+    memory_intervention: MemoryIntervention | None = None,
+) -> ContinuousAnswerResult:
+    """Evaluate exact answer accuracy on encoded controlled examples."""
+    if not isinstance(decoder, SegmentedContinuousDecoder):
+        raise TypeError("decoder must be a SegmentedContinuousDecoder")
+    if not examples:
+        raise ValueError("examples must be nonempty")
+    if not all(isinstance(example, EncodedQAExample) for example in examples):
+        raise TypeError("examples must contain EncodedQAExample values")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int):
+        raise TypeError("batch_size must be an integer")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if not isinstance(intervention_name, str) or not intervention_name:
+        raise ValueError("intervention_name must be a nonempty string")
+    if memory_intervention is not None and not callable(memory_intervention):
+        raise TypeError("memory_intervention must be callable or None")
+
+    batches = _evaluation_batches(
+        len(examples),
+        batch_size,
+        require_pairs=memory_intervention is shuffle_memory,
+    )
+    was_training = decoder.training
+    decoder.eval()
+    correct = 0
+    try:
+        for batch_slice in batches:
+            batch = examples[batch_slice]
+            input_ids, _, token_valid = collate_segmented_answer_supervision(
+                batch,
+                pad_id=pad_id,
+                device=device,
+            )
+            output = decoder(
+                input_ids,
+                token_valid,
+                memory_intervention=memory_intervention,
+            )
+            rows = torch.arange(len(batch), device=device)
+            prompt_positions = torch.tensor(
+                [len(example.input_ids) - 2 for example in batch],
+                device=device,
+            )
+            predictions = output.logits[
+                rows,
+                prompt_positions,
+            ].argmax(dim=-1).cpu()
+            correct += sum(
+                int(prediction == example.answer_id)
+                for prediction, example in zip(predictions, batch, strict=True)
+            )
+    finally:
+        decoder.train(was_training)
+
+    return ContinuousAnswerResult(
+        intervention=intervention_name,
+        correct=correct,
+        count=len(examples),
+    )
+
+
 @torch.no_grad()
 def evaluate_continuous_qa1(
     decoder: SegmentedContinuousDecoder,
@@ -130,8 +245,6 @@ def evaluate_continuous_qa1(
         raise ValueError("intervention_name must be nonempty")
     if memory_intervention is not None and not callable(memory_intervention):
         raise TypeError("memory_intervention must be callable or None")
-    if memory_intervention is shuffle_memory and batch_size < 2:
-        raise ValueError("shuffled-memory evaluation requires batch size above one")
     if not limits or any(limit <= 0 for limit in limits):
         raise ValueError("limits must contain positive values")
     if tuple(sorted(set(limits))) != limits:
@@ -161,8 +274,12 @@ def evaluate_continuous_qa1(
     outside_window_count = 0
     delay_counts: dict[str, list[int]] = {}
     try:
-        for start in range(0, len(prepared), batch_size):
-            batch = prepared[start : start + batch_size]
+        for batch_slice in _evaluation_batches(
+            len(prepared),
+            batch_size,
+            require_pairs=memory_intervention is shuffle_memory,
+        ):
+            batch = prepared[batch_slice]
             max_length = max(len(item[0]) for item in batch)
             input_ids = torch.full(
                 (len(batch), max_length),

@@ -34,8 +34,10 @@ def qa1_requires_cross_segment_memory(
         raise ValueError("segment_length must be positive")
     if example.task_id != "qa1":
         raise ValueError("cross-segment memory selection requires qa1")
-    if len(example.supporting_fact_ids) != 1:
+    if example.supporting_fact_ids is None or len(example.supporting_fact_ids) != 1:
         raise ValueError("qa1 examples must contain one supporting fact ID")
+    if example.context_fact_ids is None:
+        raise ValueError("qa1 examples must contain context fact IDs")
 
     support_id = example.supporting_fact_ids[0]
     try:

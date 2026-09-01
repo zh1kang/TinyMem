@@ -4,6 +4,7 @@ import torch
 from tinymem.data.babilong import parse_babilong_records
 from tinymem.evaluation.continuous_memory import (
     drop_memory,
+    evaluate_continuous_answers,
     evaluate_continuous_qa1,
     shuffle_memory,
     zero_memory,
@@ -14,7 +15,7 @@ from tinymem.model.config import ModelConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.memory_input import AttentionMemory
 from tinymem.model.transformer import DecoderOnlyTransformer
-from tinymem.training.controlled_qa import build_qa_vocabulary
+from tinymem.training.controlled_qa import build_qa_vocabulary, encode_qa_example
 
 
 def make_memory() -> AttentionMemory:
@@ -22,6 +23,23 @@ def make_memory() -> AttentionMemory:
         values=torch.arange(24, dtype=torch.float32).reshape(2, 3, 4),
         valid=torch.tensor([[False, True, True], [True, True, True]]),
         positions=torch.tensor([[-1, 2, 3], [0, 1, 3]]),
+    )
+
+
+def make_decoder(vocab_size: int) -> SegmentedContinuousDecoder:
+    config = ModelConfig(
+        vocab_size=vocab_size,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    return SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MeanPoolMemoryCompressor(config.d_model),
+        RecurrentMemoryBank(capacity=2, model_width=config.d_model),
+        segment_length=2,
     )
 
 
@@ -73,20 +91,7 @@ def test_continuous_evaluation_returns_exact_counts_and_curve() -> None:
         source_name="fixture.txt",
     )
     vocabulary = build_qa_vocabulary(examples)
-    config = ModelConfig(
-        vocab_size=len(vocabulary),
-        d_model=8,
-        n_layers=1,
-        n_heads=2,
-        d_ff=16,
-        max_local_tokens=4,
-    )
-    decoder = SegmentedContinuousDecoder(
-        DecoderOnlyTransformer(config),
-        MeanPoolMemoryCompressor(config.d_model),
-        RecurrentMemoryBank(capacity=2, model_width=config.d_model),
-        segment_length=2,
-    )
+    decoder = make_decoder(len(vocabulary))
     result = evaluate_continuous_qa1(
         decoder,
         vocabulary,
@@ -100,3 +105,71 @@ def test_continuous_evaluation_returns_exact_counts_and_curve() -> None:
     assert result.correct <= result.count
     assert sum(bucket.count for bucket in result.curve) == result.count
     assert result.to_dict()["count"] == 2
+
+
+def test_encoded_validation_evaluation_handles_shuffled_singleton_remainder() -> None:
+    examples = parse_babilong_records(
+        [
+            {
+                "input": f"{person} moved to the {place}.",
+                "question": f"Where is {person}? ",
+                "target": place,
+            }
+            for person, place in (
+                ("Mary", "kitchen"),
+                ("John", "office"),
+                ("Sandra", "garden"),
+            )
+        ],
+        task_id="qa1",
+        split="validation",
+        source_name="fixture.txt",
+    )
+    vocabulary = build_qa_vocabulary(examples)
+    decoder = make_decoder(len(vocabulary))
+
+    result = evaluate_continuous_answers(
+        decoder,
+        [encode_qa_example(example, vocabulary) for example in examples],
+        batch_size=2,
+        pad_id=vocabulary.token_to_id["<pad>"],
+        device="cpu",
+        intervention_name="shuffle",
+        memory_intervention=shuffle_memory,
+    )
+
+    assert result.intervention == "shuffle"
+    assert result.count == 3
+    assert result.correct <= result.count
+
+
+def test_encoded_validation_evaluation_rejects_single_item_shuffle_batches() -> None:
+    examples = parse_babilong_records(
+        [
+            {
+                "input": "Mary moved to the kitchen.",
+                "question": "Where is Mary? ",
+                "target": "kitchen",
+            },
+            {
+                "input": "John moved to the office.",
+                "question": "Where is John? ",
+                "target": "office",
+            },
+        ],
+        task_id="qa1",
+        split="validation",
+        source_name="fixture.txt",
+    )
+    vocabulary = build_qa_vocabulary(examples)
+    decoder = make_decoder(len(vocabulary))
+
+    with pytest.raises(ValueError, match="batch size above one"):
+        evaluate_continuous_answers(
+            decoder,
+            [encode_qa_example(example, vocabulary) for example in examples],
+            batch_size=1,
+            pad_id=vocabulary.token_to_id["<pad>"],
+            device="cpu",
+            memory_intervention=shuffle_memory,
+        )
