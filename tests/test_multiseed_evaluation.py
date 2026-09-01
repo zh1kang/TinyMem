@@ -17,6 +17,7 @@ def make_run(seed: int, recent_accuracy: float) -> dict[str, object]:
             "training": {"max_steps": 2000},
         },
         "seed": seed,
+        "oracle_dominates": True,
         "baselines": [
             {
                 "baseline": "local",
@@ -41,6 +42,7 @@ def test_aggregate_baseline_runs_reports_all_seeds_and_sample_statistics() -> No
 
     assert result["status"] == "full_dataset_multi_seed"
     assert result["seeds"] == [1, 2, 3]
+    assert result["oracle_dominates_all_seeds"] is True
     recent = result["baselines"][1]
     assert recent["outside_window_accuracy_mean"] == pytest.approx(0.3)
     assert recent["outside_window_accuracy_sample_std"] == pytest.approx(0.1)

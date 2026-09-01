@@ -32,6 +32,7 @@ def aggregate_baseline_runs(
             raise ValueError(f"benchmark run is missing {field!r}")
 
     seeds = []
+    oracle_dominates = []
     baseline_rows: dict[str, list[Mapping[str, Any]]] = {}
     reference_names: tuple[str, ...] | None = None
     for run in runs:
@@ -43,6 +44,10 @@ def aggregate_baseline_runs(
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ValueError("each benchmark run must have a nonnegative integer seed")
         seeds.append(seed)
+        dominates = run.get("oracle_dominates")
+        if not isinstance(dominates, bool):
+            raise ValueError("each benchmark run must report oracle dominance")
+        oracle_dominates.append(dominates)
 
         rows = run.get("baselines")
         if not isinstance(rows, list) or not rows:
@@ -102,6 +107,7 @@ def aggregate_baseline_runs(
         ),
         "seeds": seeds,
         "seed_count": len(seeds),
+        "oracle_dominates_all_seeds": all(oracle_dominates),
         **{field: reference[field] for field in MATCHED_RUN_FIELDS},
         "baselines": aggregates,
     }
