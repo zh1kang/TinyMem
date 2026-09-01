@@ -1,7 +1,11 @@
 import pytest
 import torch
 
-from tinymem.memory.continuous import MeanPoolMemoryCompressor
+from tinymem.memory.continuous import (
+    AttentionPoolMemoryCompressor,
+    ContinuousMemoryCompressor,
+    MeanPoolMemoryCompressor,
+)
 from tinymem.memory.recurrent_memory import RecurrentMemoryBank
 from tinymem.model.config import ModelConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
@@ -14,6 +18,7 @@ def make_decoder(
     segment_length: int = 2,
     capacity: int = 2,
     vocab_size: int = 16,
+    compressor_type: type[ContinuousMemoryCompressor] = MeanPoolMemoryCompressor,
 ) -> SegmentedContinuousDecoder:
     config = ModelConfig(
         vocab_size=vocab_size,
@@ -25,7 +30,7 @@ def make_decoder(
         dropout=0.0,
     )
     model = DecoderOnlyTransformer(config)
-    compressor = MeanPoolMemoryCompressor(config.d_model)
+    compressor = compressor_type(config.d_model)
     bank = RecurrentMemoryBank(
         capacity=capacity,
         model_width=config.d_model,
@@ -51,6 +56,19 @@ def test_segmented_decoder_returns_logits_and_fixed_memory() -> None:
     assert output.memory_positions.shape == (1, 2)
     assert torch.equal(output.memory_valid, torch.tensor([[True, True]]))
     assert torch.equal(output.memory_positions, torch.tensor([[1, 3]]))
+
+
+def test_segmented_decoder_accepts_attention_pooling() -> None:
+    decoder = make_decoder(
+        compressor_type=AttentionPoolMemoryCompressor,
+    )
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    token_valid = torch.ones_like(input_ids, dtype=torch.bool)
+
+    output = decoder(input_ids, token_valid)
+
+    assert output.logits.shape == (1, 4, 16)
+    assert output.memory_valid.all()
 
 
 def test_first_segment_logits_use_only_initial_empty_memory() -> None:

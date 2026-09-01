@@ -7,7 +7,7 @@ from numbers import Integral
 import torch
 from torch import nn
 
-from tinymem.memory.continuous import MeanPoolMemoryCompressor
+from tinymem.memory.continuous import ContinuousMemoryCompressor
 from tinymem.memory.recurrent_memory import RecurrentMemoryBank
 from tinymem.model.kv_cache import KVCache
 from tinymem.model.memory_input import AttentionMemory
@@ -33,7 +33,7 @@ class SegmentedContinuousDecoder(nn.Module):
     def __init__(
         self,
         model: DecoderOnlyTransformer,
-        compressor: MeanPoolMemoryCompressor,
+        compressor: ContinuousMemoryCompressor,
         bank: RecurrentMemoryBank,
         *,
         segment_length: int,
@@ -41,8 +41,8 @@ class SegmentedContinuousDecoder(nn.Module):
         super().__init__()
         if not isinstance(model, DecoderOnlyTransformer):
             raise TypeError("model must be a DecoderOnlyTransformer")
-        if not isinstance(compressor, MeanPoolMemoryCompressor):
-            raise TypeError("compressor must be a MeanPoolMemoryCompressor")
+        if not isinstance(compressor, ContinuousMemoryCompressor):
+            raise TypeError("compressor must be a ContinuousMemoryCompressor")
         if not isinstance(bank, RecurrentMemoryBank):
             raise TypeError("bank must be a RecurrentMemoryBank")
         if isinstance(segment_length, bool) or not isinstance(
