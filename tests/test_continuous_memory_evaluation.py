@@ -1,0 +1,102 @@
+import pytest
+import torch
+
+from tinymem.data.babilong import parse_babilong_records
+from tinymem.evaluation.continuous_memory import (
+    drop_memory,
+    evaluate_continuous_qa1,
+    shuffle_memory,
+    zero_memory,
+)
+from tinymem.memory.continuous import MeanPoolMemoryCompressor
+from tinymem.memory.recurrent_memory import RecurrentMemoryBank
+from tinymem.model.config import ModelConfig
+from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
+from tinymem.model.memory_input import AttentionMemory
+from tinymem.model.transformer import DecoderOnlyTransformer
+from tinymem.training.controlled_qa import build_qa_vocabulary
+
+
+def make_memory() -> AttentionMemory:
+    return AttentionMemory(
+        values=torch.arange(24, dtype=torch.float32).reshape(2, 3, 4),
+        valid=torch.tensor([[False, True, True], [True, True, True]]),
+        positions=torch.tensor([[-1, 2, 3], [0, 1, 3]]),
+    )
+
+
+def test_memory_interventions_preserve_the_expected_controls() -> None:
+    memory = make_memory()
+
+    dropped = drop_memory(memory)
+    zeroed = zero_memory(memory)
+    shuffled = shuffle_memory(memory)
+
+    assert not dropped.valid.any()
+    assert (dropped.positions == -1).all()
+    assert torch.equal(zeroed.values, torch.zeros_like(memory.values))
+    assert torch.equal(zeroed.valid, memory.valid)
+    assert torch.equal(zeroed.positions, memory.positions)
+    assert torch.equal(shuffled.values[0], memory.values[1])
+    assert torch.equal(shuffled.valid[0], memory.valid[1])
+    assert torch.equal(shuffled.positions[0], memory.positions[1])
+
+
+def test_shuffle_memory_rejects_one_batch_row() -> None:
+    memory = make_memory()
+    one_row = AttentionMemory(
+        values=memory.values[:1],
+        valid=memory.valid[:1],
+        positions=memory.positions[:1],
+    )
+
+    with pytest.raises(ValueError, match="batch size"):
+        shuffle_memory(one_row)
+
+
+def test_continuous_evaluation_returns_exact_counts_and_curve() -> None:
+    examples = parse_babilong_records(
+        [
+            {
+                "input": "Mary moved to the kitchen.",
+                "question": "Where is Mary? ",
+                "target": "kitchen",
+            },
+            {
+                "input": "John went to the office.",
+                "question": "Where is John? ",
+                "target": "office",
+            },
+        ],
+        task_id="qa1",
+        split="test",
+        source_name="fixture.txt",
+    )
+    vocabulary = build_qa_vocabulary(examples)
+    config = ModelConfig(
+        vocab_size=len(vocabulary),
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MeanPoolMemoryCompressor(config.d_model),
+        RecurrentMemoryBank(capacity=2, model_width=config.d_model),
+        segment_length=2,
+    )
+    result = evaluate_continuous_qa1(
+        decoder,
+        vocabulary,
+        examples,
+        batch_size=2,
+        device="cpu",
+    )
+
+    assert result.intervention == "normal"
+    assert result.count == 2
+    assert result.correct <= result.count
+    assert sum(bucket.count for bucket in result.curve) == result.count
+    assert result.to_dict()["count"] == 2
