@@ -6,12 +6,63 @@ from numbers import Real
 import torch
 from torch.optim import Optimizer
 
+from tinymem.data.schema import ReasoningExample
+from tinymem.data.vocabulary import ControlledVocabulary
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.training.controlled_qa import (
     EncodedQAExample,
     collate_answer_supervision,
+    format_qa_prompt,
 )
 from tinymem.training.losses import next_token_cross_entropy
+
+
+def qa1_requires_cross_segment_memory(
+    example: ReasoningExample,
+    vocabulary: ControlledVocabulary,
+    *,
+    segment_length: int,
+) -> bool:
+    """Return whether the qa1 evidence ends before the query segment."""
+    if not isinstance(example, ReasoningExample):
+        raise TypeError("example must be a ReasoningExample")
+    if not isinstance(vocabulary, ControlledVocabulary):
+        raise TypeError("vocabulary must be a ControlledVocabulary")
+    if isinstance(segment_length, bool) or not isinstance(segment_length, int):
+        raise TypeError("segment_length must be an integer")
+    if segment_length <= 0:
+        raise ValueError("segment_length must be positive")
+    if example.task_id != "qa1":
+        raise ValueError("cross-segment memory selection requires qa1")
+    if len(example.supporting_fact_ids) != 1:
+        raise ValueError("qa1 examples must contain one supporting fact ID")
+
+    support_id = example.supporting_fact_ids[0]
+    try:
+        fact_index = example.context_fact_ids.index(support_id)
+    except ValueError as error:
+        raise ValueError("supporting fact ID is absent from the context") from error
+    context_lines = example.context.splitlines(keepends=True)
+    if len(context_lines) != len(example.context_fact_ids):
+        raise ValueError("context lines and fact IDs must remain aligned")
+
+    evidence_start = sum(len(line) for line in context_lines[:fact_index])
+    evidence_end = evidence_start + len(
+        context_lines[fact_index].rstrip("\r\n")
+    )
+    evidence_prefix_ids = vocabulary.encode(
+        example.context[:evidence_end],
+        add_bos=True,
+    )
+    if not evidence_prefix_ids:
+        raise ValueError("supporting fact must encode to at least one token")
+    evidence_last_position = len(evidence_prefix_ids) - 1
+    prompt_ids = vocabulary.encode(format_qa_prompt(example), add_bos=True)
+    query_position = len(prompt_ids) - 1
+    return (
+        evidence_last_position // segment_length
+        < query_position // segment_length
+    )
 
 
 def collate_segmented_answer_supervision(

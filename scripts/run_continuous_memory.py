@@ -26,7 +26,10 @@ from tinymem.model.config import ExperimentConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.checkpointing import load_checkpoint, save_checkpoint
-from tinymem.training.continuous import train_continuous_answer_supervision
+from tinymem.training.continuous import (
+    qa1_requires_cross_segment_memory,
+    train_continuous_answer_supervision,
+)
 from tinymem.training.controlled_qa import encode_qa_example
 from tinymem.utils.device import select_device
 from tinymem.utils.experiment import create_run_directory, current_git_commit
@@ -150,14 +153,14 @@ def main() -> None:
         task_id="qa1",
         split="train",
     )
-    encoded_train = [
+    memory_curriculum = [
         encode_qa_example(example, vocabulary)
         for example in train_examples
-    ]
-    memory_curriculum = [
-        example
-        for example in encoded_train
-        if len(example.input_ids) > args.segment_length
+        if qa1_requires_cross_segment_memory(
+            example,
+            vocabulary,
+            segment_length=args.segment_length,
+        )
     ]
     if not memory_curriculum:
         raise ValueError("no training examples cross a segment boundary")

@@ -9,6 +9,7 @@ from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.continuous import (
     collate_segmented_answer_supervision,
+    qa1_requires_cross_segment_memory,
     train_continuous_answer_supervision,
 )
 from tinymem.training.controlled_qa import (
@@ -71,6 +72,32 @@ def test_segmented_collation_returns_right_padding_mask() -> None:
         length = len(example.input_ids)
         assert token_valid[row, :length].all()
         assert not token_valid[row, length:].any()
+
+
+def test_memory_curriculum_requires_evidence_before_the_query_segment() -> None:
+    examples = parse_babi_lines(
+        [
+            "1 Mary moved to the kitchen.\n",
+            "2 John went to the office.\n",
+            "3 Sandra went to the garden.\n",
+            "4 Where is Mary?\tkitchen\t1\n",
+        ],
+        task_id="qa1",
+        split="train",
+        source_name="fixture.txt",
+    )
+    vocabulary = build_qa_vocabulary(examples)
+
+    assert qa1_requires_cross_segment_memory(
+        examples[0],
+        vocabulary,
+        segment_length=8,
+    )
+    assert not qa1_requires_cross_segment_memory(
+        examples[0],
+        vocabulary,
+        segment_length=128,
+    )
 
 
 def test_continuous_training_updates_the_compressor() -> None:
