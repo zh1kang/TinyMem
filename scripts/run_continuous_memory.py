@@ -24,6 +24,7 @@ from tinymem.evaluation.continuous_memory import (
 from tinymem.memory.continuous import (
     AttentionPoolMemoryCompressor,
     MeanPoolMemoryCompressor,
+    MultiSlotAttentionMemoryCompressor,
 )
 from tinymem.memory.recurrent_memory import RecurrentMemoryBank
 from tinymem.model.config import ExperimentConfig
@@ -53,9 +54,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--capacity", type=int, default=12)
     parser.add_argument(
         "--compressor",
-        choices=("mean", "attention"),
+        choices=("mean", "attention", "multislot_attention"),
         default="mean",
     )
+    parser.add_argument("--summaries-per-segment", type=int, default=4)
     parser.add_argument(
         "--evaluation-scope",
         choices=("validation", "all"),
@@ -128,6 +130,8 @@ def main() -> None:
         raise ValueError("evaluation batch size must be greater than one")
     if args.segment_length <= 0 or args.capacity <= 0 or args.seed < 0:
         raise ValueError("segment length and capacity must be positive")
+    if not 0 < args.summaries_per_segment <= args.capacity:
+        raise ValueError("summaries per segment must be between one and capacity")
     if args.learning_rate <= 0 or args.weight_decay < 0:
         raise ValueError("learning rate must be positive and weight decay nonnegative")
     if args.gradient_clip_norm <= 0:
@@ -146,14 +150,18 @@ def main() -> None:
     if args.segment_length > model.config.max_local_tokens:
         raise ValueError("segment length must not exceed the base local window")
 
-    compressor_type = (
-        MeanPoolMemoryCompressor
-        if args.compressor == "mean"
-        else AttentionPoolMemoryCompressor
-    )
+    if args.compressor == "mean":
+        compressor = MeanPoolMemoryCompressor(model.config.d_model)
+    elif args.compressor == "attention":
+        compressor = AttentionPoolMemoryCompressor(model.config.d_model)
+    else:
+        compressor = MultiSlotAttentionMemoryCompressor(
+            model.config.d_model,
+            summary_slots=args.summaries_per_segment,
+        )
     decoder = SegmentedContinuousDecoder(
         model,
-        compressor_type(model.config.d_model),
+        compressor,
         RecurrentMemoryBank(
             capacity=args.capacity,
             model_width=model.config.d_model,
@@ -334,6 +342,11 @@ def main() -> None:
         "compressor": args.compressor,
         "segment_length": args.segment_length,
         "capacity": args.capacity,
+        "summaries_per_segment": (
+            args.summaries_per_segment
+            if args.compressor == "multislot_attention"
+            else 1
+        ),
         "memory_bytes_per_example": args.capacity
         * (
             model.config.d_model

@@ -4,6 +4,7 @@ import torch
 from tinymem.memory.continuous import (
     AttentionPoolMemoryCompressor,
     MeanPoolMemoryCompressor,
+    MultiSlotAttentionMemoryCompressor,
 )
 
 
@@ -142,6 +143,63 @@ def test_attention_pool_zeros_rows_without_valid_tokens() -> None:
     assert torch.equal(summary_valid, torch.tensor([[False], [True]]))
     assert torch.equal(summary[0], torch.zeros_like(summary[0]))
     assert torch.isfinite(summary).all()
+
+
+def test_multislot_attention_returns_distinct_fixed_slots() -> None:
+    compressor = MultiSlotAttentionMemoryCompressor(
+        model_width=4,
+        summary_slots=3,
+    )
+    hidden = torch.randn(2, 5, 4, requires_grad=True)
+    valid = torch.tensor(
+        [[True, True, False, False, False], [True, True, True, True, True]]
+    )
+
+    summary, summary_valid = compressor(hidden, valid)
+    summary.sum().backward()
+
+    assert summary.shape == (2, 3, 4)
+    assert torch.equal(summary_valid, torch.ones(2, 3, dtype=torch.bool))
+    assert not torch.equal(compressor.queries[0], compressor.queries[1])
+    assert compressor.queries.grad is not None
+    assert torch.equal(hidden.grad[0, 2:], torch.zeros(3, 4))
+
+
+def test_multislot_attention_zeros_all_slots_for_an_empty_row() -> None:
+    compressor = MultiSlotAttentionMemoryCompressor(
+        model_width=3,
+        summary_slots=2,
+    )
+    hidden = torch.randn(2, 4, 3)
+    valid = torch.tensor(
+        [[False, False, False, False], [True, False, False, False]]
+    )
+
+    summary, summary_valid = compressor(hidden, valid)
+
+    assert torch.equal(
+        summary_valid,
+        torch.tensor([[False, False], [True, True]]),
+    )
+    assert torch.equal(summary[0], torch.zeros_like(summary[0]))
+    assert torch.isfinite(summary).all()
+
+
+@pytest.mark.parametrize("summary_slots", [True, 0, -1, 1.5, "2"])
+def test_multislot_attention_rejects_invalid_slot_counts(
+    summary_slots: object,
+) -> None:
+    expected = (
+        ValueError
+        if isinstance(summary_slots, int) and not isinstance(summary_slots, bool)
+        else TypeError
+    )
+
+    with pytest.raises(expected):
+        MultiSlotAttentionMemoryCompressor(
+            model_width=3,
+            summary_slots=summary_slots,
+        )
 
 
 @pytest.mark.parametrize(

@@ -118,12 +118,13 @@ class SegmentedContinuousDecoder(nn.Module):
         summary_positions: torch.Tensor,
         summary_valid: torch.Tensor,
     ) -> torch.Tensor:
+        write_count = summary_positions.shape[1]
         shifted_positions = torch.cat(
-            (memory_positions[:, 1:], summary_positions),
+            (memory_positions[:, write_count:], summary_positions),
             dim=1,
         )
         return torch.where(
-            summary_valid,
+            summary_valid[:, :1],
             shifted_positions,
             memory_positions,
         )
@@ -205,7 +206,7 @@ class SegmentedContinuousDecoder(nn.Module):
             summary_positions = self._summary_positions(
                 segment_valid,
                 position_offset=offset,
-            )
+            ).expand(-1, summary.shape[1])
             memory, memory_valid = self.bank(
                 memory,
                 memory_valid,

@@ -5,6 +5,7 @@ from tinymem.memory.continuous import (
     AttentionPoolMemoryCompressor,
     ContinuousMemoryCompressor,
     MeanPoolMemoryCompressor,
+    MultiSlotAttentionMemoryCompressor,
 )
 from tinymem.memory.recurrent_memory import RecurrentMemoryBank
 from tinymem.model.config import ModelConfig
@@ -69,6 +70,35 @@ def test_segmented_decoder_accepts_attention_pooling() -> None:
 
     assert output.logits.shape == (1, 4, 16)
     assert output.memory_valid.all()
+
+
+def test_segmented_decoder_appends_multiple_summaries_and_positions() -> None:
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+        dropout=0.0,
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MultiSlotAttentionMemoryCompressor(
+            config.d_model,
+            summary_slots=2,
+        ),
+        RecurrentMemoryBank(capacity=4, model_width=config.d_model),
+        segment_length=2,
+    )
+
+    output = decoder(
+        torch.tensor([[1, 2, 3, 4]]),
+        torch.ones(1, 4, dtype=torch.bool),
+    )
+
+    assert output.memory_valid.all()
+    assert torch.equal(output.memory_positions, torch.tensor([[1, 1, 3, 3]]))
 
 
 def test_first_segment_logits_use_only_initial_empty_memory() -> None:

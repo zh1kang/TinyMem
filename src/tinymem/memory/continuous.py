@@ -8,7 +8,7 @@ from torch import nn
 
 
 class ContinuousMemoryCompressor(nn.Module, ABC):
-    """Define the shared one-slot continuous compression contract."""
+    """Define the shared continuous compression contract."""
 
     def __init__(self, model_width: int) -> None:
         super().__init__()
@@ -62,7 +62,7 @@ class ContinuousMemoryCompressor(nn.Module, ABC):
         expired_hidden: torch.Tensor,
         expired_valid: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return one summary and one validity bit for each batch row."""
+        """Return summary slots and validity bits for each batch row."""
 
 
 class MeanPoolMemoryCompressor(ContinuousMemoryCompressor):
@@ -144,5 +144,58 @@ class AttentionPoolMemoryCompressor(ContinuousMemoryCompressor):
         weights = weights / normalizer
         pooled = torch.einsum("bt,btd->bd", weights, expired_hidden).unsqueeze(1)
         summary = self.projection(pooled)
+        summary = summary * summary_valid.unsqueeze(-1).to(dtype=summary.dtype)
+        return summary, summary_valid
+
+
+class MultiSlotAttentionMemoryCompressor(ContinuousMemoryCompressor):
+    """Use distinct learned queries to preserve several segment features."""
+
+    def __init__(self, model_width: int, *, summary_slots: int) -> None:
+        super().__init__(model_width)
+        if isinstance(summary_slots, bool) or not isinstance(
+            summary_slots,
+            Integral,
+        ):
+            raise TypeError("summary_slots must be an integer")
+        if summary_slots <= 0:
+            raise ValueError("summary_slots must be positive")
+        self.summary_slots = int(summary_slots)
+        self.queries = nn.Parameter(
+            torch.empty(self.summary_slots, self.model_width)
+        )
+        nn.init.normal_(self.queries, mean=0.0, std=0.02)
+        self.projection = nn.Linear(self.model_width, self.model_width)
+        self.scale = self.model_width**-0.5
+
+    def forward(
+        self,
+        expired_hidden: torch.Tensor,
+        expired_valid: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return one masked attention summary per learned query."""
+        row_valid = self._validate_inputs(
+            expired_hidden,
+            expired_valid,
+            parameter=self.queries,
+        )
+        scores = torch.einsum(
+            "btd,sd->bst",
+            expired_hidden,
+            self.queries,
+        ) * self.scale
+        scores = scores.masked_fill(
+            ~expired_valid.unsqueeze(1),
+            torch.finfo(scores.dtype).min,
+        )
+        weights = torch.softmax(scores, dim=-1)
+        weights = weights * expired_valid.unsqueeze(1).to(dtype=weights.dtype)
+        normalizer = weights.sum(dim=-1, keepdim=True).clamp_min(
+            torch.finfo(weights.dtype).tiny
+        )
+        weights = weights / normalizer
+        pooled = torch.einsum("bst,btd->bsd", weights, expired_hidden)
+        summary = self.projection(pooled)
+        summary_valid = row_valid.expand(-1, self.summary_slots)
         summary = summary * summary_valid.unsqueeze(-1).to(dtype=summary.dtype)
         return summary, summary_valid

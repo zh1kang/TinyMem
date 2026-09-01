@@ -12,8 +12,8 @@ class RecurrentMemoryBank(nn.Module):
     Inputs:
         memory:        [batch, capacity, model_width]
         memory_valid:  [batch, capacity]
-        summary:       [batch, 1, model_width]
-        summary_valid: [batch, 1]
+        summary:       [batch, writes, model_width]
+        summary_valid: [batch, writes]
 
     Outputs:
         next_memory:       [batch, capacity, model_width]
@@ -77,13 +77,19 @@ class RecurrentMemoryBank(nn.Module):
         if memory_valid.dtype != torch.bool:
             raise TypeError("memory_valid must be a boolean tensor")
 
-        expected_summary_shape = (memory.shape[0], 1, self.model_width)
-        if summary.shape != expected_summary_shape:
-            raise ValueError(f"summary must have shape {expected_summary_shape}")
+        if summary.ndim != 3:
+            raise ValueError("summary must have shape [batch, writes, model_width]")
+        if summary.shape[0] != memory.shape[0]:
+            raise ValueError("summary and memory must have the same batch size")
+        if summary.shape[2] != self.model_width:
+            raise ValueError(f"summary model width must be {self.model_width}")
+        write_count = summary.shape[1]
+        if write_count == 0 or write_count > self.capacity:
+            raise ValueError("summary writes must be between one and capacity")
         if not summary.is_floating_point():
             raise TypeError("summary must be a floating-point tensor")
 
-        expected_summary_valid_shape = expected_summary_shape[:2]
+        expected_summary_valid_shape = (memory.shape[0], write_count)
         if summary_valid.shape != expected_summary_valid_shape:
             raise ValueError(
                 "summary_valid must have shape "
@@ -91,24 +97,30 @@ class RecurrentMemoryBank(nn.Module):
             )
         if summary_valid.dtype != torch.bool:
             raise TypeError("summary_valid must be a boolean tensor")
+        if (summary_valid != summary_valid[:, :1]).any():
+            raise ValueError("all summary slots in a row must share validity")
 
         if any(tensor.device != memory.device for tensor in tensors.values()):
             raise ValueError("all recurrent memory tensors must share a device")
         if summary.dtype != memory.dtype:
             raise TypeError("summary and memory must share a dtype")
 
-        shifted_memory = torch.cat((memory[:, 1:, :], summary), dim=1)
-        shifted_valid = torch.cat(
-            (memory_valid[:, 1:], summary_valid),
+        shifted_memory = torch.cat(
+            (memory[:, write_count:, :], summary),
             dim=1,
         )
+        shifted_valid = torch.cat(
+            (memory_valid[:, write_count:], summary_valid),
+            dim=1,
+        )
+        row_valid = summary_valid[:, :1]
         next_memory = torch.where(
-            summary_valid.unsqueeze(-1),
+            row_valid.unsqueeze(-1),
             shifted_memory,
             memory,
         )
         next_memory_valid = torch.where(
-            summary_valid,
+            row_valid,
             shifted_valid,
             memory_valid,
         )

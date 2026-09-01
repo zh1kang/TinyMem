@@ -23,6 +23,27 @@ def test_recurrent_bank_evicts_oldest_slot_and_appends_summary() -> None:
     assert torch.equal(next_valid, torch.tensor([[True, True, True]]))
 
 
+def test_recurrent_bank_appends_multiple_summaries_together() -> None:
+    bank = RecurrentMemoryBank(capacity=4, model_width=1)
+    memory = torch.tensor([[[1.0], [2.0], [3.0], [4.0]]])
+    memory_valid = torch.ones(1, 4, dtype=torch.bool)
+    summary = torch.tensor([[[5.0], [6.0]]])
+    summary_valid = torch.ones(1, 2, dtype=torch.bool)
+
+    next_memory, next_valid = bank(
+        memory,
+        memory_valid,
+        summary,
+        summary_valid,
+    )
+
+    assert torch.equal(
+        next_memory,
+        torch.tensor([[[3.0], [4.0], [5.0], [6.0]]]),
+    )
+    assert next_valid.all()
+
+
 def test_recurrent_bank_keeps_rows_with_invalid_summaries_unchanged() -> None:
     bank = RecurrentMemoryBank(capacity=3, model_width=1)
     memory = torch.tensor(
@@ -125,9 +146,17 @@ def test_recurrent_bank_preserves_gradient_paths_for_selected_values() -> None:
         ({"memory_valid": torch.ones(1, 3, dtype=torch.bool)}, ValueError),
         ({"memory_valid": torch.ones(1, 2)}, TypeError),
         ({"summary": torch.ones(1, 2, 2)}, ValueError),
+        ({"summary": torch.ones(1, 0, 2)}, ValueError),
         ({"summary": torch.ones(1, 1, 2, dtype=torch.long)}, TypeError),
         ({"summary_valid": torch.ones(1, dtype=torch.bool)}, ValueError),
         ({"summary_valid": torch.ones(1, 1)}, TypeError),
+        (
+            {
+                "summary": torch.ones(1, 2, 2),
+                "summary_valid": torch.tensor([[True, False]]),
+            },
+            ValueError,
+        ),
     ],
 )
 def test_recurrent_bank_rejects_invalid_inputs(
