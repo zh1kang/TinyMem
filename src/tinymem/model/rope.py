@@ -58,8 +58,9 @@ class RotaryEmbedding(nn.Module):
         x: torch.Tensor,
         *,
         position_offset: int = 0,
+        position_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Apply position-dependent rotations to the final feature dimension."""
+        """Rotate features using contiguous or explicitly supplied positions."""
         if not isinstance(x, torch.Tensor):
             raise TypeError(f"x must be a torch.Tensor, got {type(x)}")
         if not x.is_floating_point():
@@ -81,15 +82,44 @@ class RotaryEmbedding(nn.Module):
         sequence_length = x.shape[-2]
         if sequence_length > self.max_position_embeddings:
             raise ValueError("sequence exceeds the maximum position supported")
+        if position_ids is not None:
+            if not isinstance(position_ids, torch.Tensor):
+                raise TypeError("position_ids must be a torch.Tensor or None")
+            if position_offset != 0:
+                raise ValueError(
+                    "position_offset must be zero when position_ids are supplied"
+                )
+            if position_ids.dtype not in (torch.int32, torch.int64):
+                raise TypeError("position_ids must be an integer tensor")
+            if position_ids.device != x.device:
+                raise ValueError("position_ids and x must be on the same device")
+            if position_ids.ndim not in (1, 2):
+                raise ValueError("position_ids must have shape [T] or [B, T]")
+            expected_shape = (sequence_length,)
+            if position_ids.ndim == 1 and position_ids.shape != expected_shape:
+                raise ValueError(f"position_ids must have shape {expected_shape}")
+            expected_batch_shape = (x.shape[0], sequence_length)
+            if position_ids.ndim == 2 and position_ids.shape != expected_batch_shape:
+                raise ValueError(
+                    f"position_ids must have shape {expected_batch_shape}"
+                )
+            if (position_ids < 0).any():
+                raise ValueError("position_ids must be nonnegative")
+        else:
+            position_ids = torch.arange(
+                position_offset,
+                position_offset + sequence_length,
+                device=x.device,
+            )
 
-        positions = torch.arange(
-            position_offset,
-            position_offset + sequence_length,
-            device=x.device,
-        )
-        angles = positions[:, None] * self.inv_freq[None, :]
-        sin = angles.sin()[None, None, :, :]
-        cos = angles.cos()[None, None, :, :]
+        if position_ids.ndim == 1:
+            position_batches = position_ids.unsqueeze(0)
+        else:
+            position_batches = position_ids
+
+        angles = position_batches[..., None] * self.inv_freq[None, None, :]
+        sin = angles.sin().unsqueeze(1)
+        cos = angles.cos().unsqueeze(1)
 
         even = x[..., 0::2]
         odd = x[..., 1::2]
