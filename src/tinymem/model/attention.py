@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from tinymem.model.kv_cache import KVCache
+from tinymem.model.memory_input import AttentionMemory
 from tinymem.model.rope import RotaryEmbedding
 
 
@@ -80,6 +81,7 @@ class CausalSelfAttention(nn.Module):
         position_offset: int = 0,
         cache: KVCache | None = None,
         attention_observer: AttentionObserver | None = None,
+        memory: AttentionMemory | None = None,
     ) -> torch.Tensor:
         """Return attention output without allowing future-token access."""
 
@@ -107,6 +109,19 @@ class CausalSelfAttention(nn.Module):
             )
         if attention_observer is not None and not callable(attention_observer):
             raise TypeError("attention_observer must be callable or None")
+        if memory is not None:
+            if not isinstance(memory, AttentionMemory):
+                raise TypeError("memory must be an AttentionMemory or None")
+            if memory.values.shape[0] != x.shape[0]:
+                raise ValueError("memory and x must have the same batch size")
+            if memory.values.shape[2] != self.d_model:
+                raise ValueError(f"memory model width must be {self.d_model}")
+            if memory.values.dtype != x.dtype:
+                raise ValueError("memory and x must have the same dtype")
+            if memory.values.device != x.device:
+                raise ValueError("memory and x must be on the same device")
+            if (memory.positions[memory.valid] >= position_offset).any():
+                raise ValueError("valid memory positions must precede local queries")
 
         q = self.q_proj(x)
         k = self.k_proj(x)
@@ -128,6 +143,28 @@ class CausalSelfAttention(nn.Module):
             attention_keys, attention_values = cache.get()
             key_start_position = cache.start_position
 
+        memory_slot_count = 0
+        if memory is not None and memory.slot_count > 0:
+            memory_keys = self.k_proj(memory.values)
+            memory_values = self.v_proj(memory.values)
+            memory_keys = memory_keys.reshape(
+                x.size(0),
+                memory.slot_count,
+                self.n_heads,
+                self.head_dim,
+            ).transpose(1, 2)
+            memory_values = memory_values.reshape(
+                x.size(0),
+                memory.slot_count,
+                self.n_heads,
+                self.head_dim,
+            ).transpose(1, 2)
+            safe_positions = memory.positions.masked_fill(~memory.valid, 0)
+            memory_keys = self.rotary(memory_keys, position_ids=safe_positions)
+            attention_keys = torch.cat((memory_keys, attention_keys), dim=-2)
+            attention_values = torch.cat((memory_values, attention_values), dim=-2)
+            memory_slot_count = memory.slot_count
+
         attn_score = (
             q @ attention_keys.transpose(-2, -1) / (self.head_dim**0.5)
         )
@@ -136,18 +173,44 @@ class CausalSelfAttention(nn.Module):
             position_offset + x.size(1),
             device=x.device,
         )
-        key_positions = torch.arange(
+        local_key_positions = torch.arange(
             key_start_position,
-            key_start_position + attention_keys.size(-2),
+            key_start_position + attention_keys.size(-2) - memory_slot_count,
             device=x.device,
         )
-        causal_mask = key_positions.unsqueeze(0) > query_positions.unsqueeze(1)
-        attn_score = attn_score.masked_fill(causal_mask, float("-inf"))
+        local_causal_mask = (
+            local_key_positions.unsqueeze(0) > query_positions.unsqueeze(1)
+        )
+        if memory_slot_count > 0:
+            assert memory is not None
+            memory_mask = (~memory.valid).unsqueeze(1).expand(
+                -1,
+                x.size(1),
+                -1,
+            )
+            local_mask = local_causal_mask.unsqueeze(0).expand(
+                x.size(0),
+                -1,
+                -1,
+            )
+            attention_mask = torch.cat(
+                (memory_mask, local_mask),
+                dim=-1,
+            ).unsqueeze(1)
+            attn_score = attn_score.masked_fill(
+                attention_mask,
+                float("-inf"),
+            )
+        else:
+            attn_score = attn_score.masked_fill(
+                local_causal_mask,
+                float("-inf"),
+            )
         attn_prob = torch.softmax(attn_score, dim=-1)
         if attention_observer is not None:
             attention_observer(
                 attn_prob.detach().clone(),
-                key_positions.clone(),
+                local_key_positions.clone(),
             )
 
         attn_prob = self.dropout(attn_prob)
