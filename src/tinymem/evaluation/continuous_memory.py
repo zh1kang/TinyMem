@@ -1,7 +1,10 @@
 """Counterfactual evaluations for learned continuous memory."""
 
+from __future__ import annotations
+
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from math import comb
 
 import torch
 
@@ -32,6 +35,9 @@ class ContinuousMemoryResult:
     outside_window_correct: int
     outside_window_count: int
     curve: tuple[DelayResult, ...]
+    correctness: tuple[bool, ...]
+    outside_window_correctness: tuple[bool, ...]
+    writes: WriteDecisionResult
 
     @property
     def accuracy(self) -> float:
@@ -53,6 +59,7 @@ class ContinuousMemoryResult:
             "outside_window_count": self.outside_window_count,
             "outside_window_accuracy": self.outside_window_accuracy,
             "curve": [bucket.to_dict() for bucket in self.curve],
+            "writes": self.writes.to_dict(),
         }
 
 
@@ -89,6 +96,16 @@ class WriteDecisionResult:
             return 0.0
         return self.true_positive / actual_positive
 
+    @property
+    def write_rate(self) -> float:
+        total = (
+            self.true_positive
+            + self.false_positive
+            + self.false_negative
+            + self.true_negative
+        )
+        return (self.true_positive + self.false_positive) / total
+
     def to_dict(self) -> dict[str, object]:
         return {
             "true_positive": self.true_positive,
@@ -98,6 +115,61 @@ class WriteDecisionResult:
             "accuracy": self.accuracy,
             "precision": self.precision,
             "recall": self.recall,
+            "write_rate": self.write_rate,
+        }
+
+
+@dataclass(frozen=True)
+class PairedAccuracyResult:
+    """Store a one-sided exact paired comparison against normal memory."""
+
+    normal_only_correct: int
+    intervention_only_correct: int
+    ties: int
+    alpha: float
+
+    @property
+    def count(self) -> int:
+        return (
+            self.normal_only_correct
+            + self.intervention_only_correct
+            + self.ties
+        )
+
+    @property
+    def accuracy_difference(self) -> float:
+        return (
+            self.normal_only_correct - self.intervention_only_correct
+        ) / self.count
+
+    @property
+    def one_sided_p_value(self) -> float:
+        discordant = self.normal_only_correct + self.intervention_only_correct
+        if discordant == 0:
+            return 1.0
+        numerator = sum(
+            comb(discordant, successes)
+            for successes in range(self.normal_only_correct, discordant + 1)
+        )
+        return numerator / (2**discordant)
+
+    @property
+    def significant(self) -> bool:
+        return (
+            self.normal_only_correct > self.intervention_only_correct
+            and self.one_sided_p_value <= self.alpha
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "normal_only_correct": self.normal_only_correct,
+            "intervention_only_correct": self.intervention_only_correct,
+            "ties": self.ties,
+            "count": self.count,
+            "accuracy_difference": self.accuracy_difference,
+            "one_sided_p_value": self.one_sided_p_value,
+            "alpha": self.alpha,
+            "significant": self.significant,
         }
 
 
@@ -108,6 +180,7 @@ class ContinuousAnswerResult:
     intervention: str
     correct: int
     count: int
+    correctness: tuple[bool, ...]
     writes: WriteDecisionResult | None = None
 
     @property
@@ -124,6 +197,53 @@ class ContinuousAnswerResult:
         if self.writes is not None:
             document["writes"] = self.writes.to_dict()
         return document
+
+
+def paired_accuracy_test(
+    normal: Sequence[bool],
+    intervention: Sequence[bool],
+    *,
+    alpha: float,
+) -> PairedAccuracyResult:
+    """Compare paired correctness with an exact one-sided sign test."""
+    if not isinstance(normal, Sequence) or isinstance(normal, (str, bytes)):
+        raise TypeError("normal must be a sequence of booleans")
+    if not isinstance(intervention, Sequence) or isinstance(
+        intervention,
+        (str, bytes),
+    ):
+        raise TypeError("intervention must be a sequence of booleans")
+    if len(normal) != len(intervention):
+        raise ValueError("paired correctness sequences must have equal length")
+    if not normal:
+        raise ValueError("paired correctness sequences must be nonempty")
+    if not all(isinstance(value, bool) for value in (*normal, *intervention)):
+        raise TypeError("paired correctness sequences must contain booleans")
+    if isinstance(alpha, bool) or not isinstance(alpha, (int, float)):
+        raise TypeError("alpha must be a real number")
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must be between zero and one")
+
+    normal_only = 0
+    intervention_only = 0
+    ties = 0
+    for normal_correct, intervention_correct in zip(
+        normal,
+        intervention,
+        strict=True,
+    ):
+        if normal_correct and not intervention_correct:
+            normal_only += 1
+        elif intervention_correct and not normal_correct:
+            intervention_only += 1
+        else:
+            ties += 1
+    return PairedAccuracyResult(
+        normal_only_correct=normal_only,
+        intervention_only_correct=intervention_only,
+        ties=ties,
+        alpha=float(alpha),
+    )
 
 
 def drop_memory(memory: AttentionMemory) -> AttentionMemory:
@@ -194,6 +314,44 @@ def _evaluation_batches(
     return tuple(batches)
 
 
+def _write_decision_counts(
+    actual: torch.Tensor,
+    expected: Sequence[bool],
+) -> tuple[int, int, int, int]:
+    expected_tensor = torch.tensor(expected, dtype=torch.bool)
+    return (
+        int((actual & expected_tensor).sum()),
+        int((actual & ~expected_tensor).sum()),
+        int((~actual & expected_tensor).sum()),
+        int((~actual & ~expected_tensor).sum()),
+    )
+
+
+def _evidence_segment_targets(
+    example: ReasoningExample,
+    vocabulary: ControlledVocabulary,
+    *,
+    segment_length: int,
+    prompt_ids: Sequence[int],
+) -> tuple[bool, ...]:
+    if example.evidence_facts is None:
+        raise ValueError("write evaluation requires exact evidence facts")
+    segment_count = (len(prompt_ids) + segment_length - 1) // segment_length
+    targets = [False] * segment_count
+    for fact in example.evidence_facts:
+        fact_ids = vocabulary.encode(fact.text)
+        start = 1 + len(vocabulary.encode(example.context[: fact.start_char]))
+        end = start + len(fact_ids)
+        if list(prompt_ids[start:end]) != fact_ids:
+            raise ValueError("evidence span does not align with prompt tokens")
+        for segment in range(
+            start // segment_length,
+            (end - 1) // segment_length + 1,
+        ):
+            targets[segment] = True
+    return tuple(targets)
+
+
 @torch.no_grad()
 def evaluate_continuous_answers(
     decoder: SegmentedContinuousDecoder,
@@ -229,6 +387,7 @@ def evaluate_continuous_answers(
     was_training = decoder.training
     decoder.eval()
     correct = 0
+    correctness = []
     has_write_targets = all(
         example.segment_write_targets is not None for example in examples
     )
@@ -262,10 +421,12 @@ def evaluate_continuous_answers(
                 rows,
                 prompt_positions,
             ].argmax(dim=-1).cpu()
-            correct += sum(
-                int(prediction == example.answer_id)
+            batch_correctness = tuple(
+                bool(prediction == example.answer_id)
                 for prediction, example in zip(predictions, batch, strict=True)
             )
+            correctness.extend(batch_correctness)
+            correct += sum(batch_correctness)
             if has_write_targets:
                 for row, example in enumerate(batch):
                     targets = example.segment_write_targets
@@ -278,11 +439,11 @@ def evaluate_continuous_answers(
                             "segment write targets must match the encoded sequence"
                         )
                     actual = output.writes_applied[row, :expected_count].cpu()
-                    expected = torch.tensor(targets, dtype=torch.bool)
-                    true_positive += int((actual & expected).sum())
-                    false_positive += int((actual & ~expected).sum())
-                    false_negative += int((~actual & expected).sum())
-                    true_negative += int((~actual & ~expected).sum())
+                    counts = _write_decision_counts(actual, targets)
+                    true_positive += counts[0]
+                    false_positive += counts[1]
+                    false_negative += counts[2]
+                    true_negative += counts[3]
     finally:
         decoder.train(was_training)
 
@@ -298,6 +459,7 @@ def evaluate_continuous_answers(
         intervention=intervention_name,
         correct=correct,
         count=len(examples),
+        correctness=tuple(correctness),
         writes=writes,
     )
 
@@ -349,6 +511,12 @@ def evaluate_continuous_qa1(
                 prompt_ids,
                 answer_ids[0],
                 qa1_evidence_delay_tokens(example, vocabulary),
+                _evidence_segment_targets(
+                    example,
+                    vocabulary,
+                    segment_length=decoder.segment_length,
+                    prompt_ids=prompt_ids,
+                ),
             )
         )
     prepared.sort(key=lambda item: len(item[0]))
@@ -358,6 +526,12 @@ def evaluate_continuous_qa1(
     correct = 0
     outside_window_correct = 0
     outside_window_count = 0
+    correctness = []
+    outside_window_correctness = []
+    true_positive = 0
+    false_positive = 0
+    false_negative = 0
+    true_negative = 0
     delay_counts: dict[str, list[int]] = {}
     try:
         for batch_slice in _evaluation_batches(
@@ -375,7 +549,7 @@ def evaluate_continuous_qa1(
             )
             token_valid = torch.zeros_like(input_ids, dtype=torch.bool)
             prompt_lengths = []
-            for row, (prompt_ids, _, _) in enumerate(batch):
+            for row, (prompt_ids, _, _, _) in enumerate(batch):
                 length = len(prompt_ids)
                 input_ids[row, :length] = torch.tensor(
                     prompt_ids,
@@ -396,20 +570,31 @@ def evaluate_continuous_qa1(
                 device=device,
             )
             predictions = output.logits[rows, final_positions].argmax(dim=-1).cpu()
-            for prediction, (_, answer_id, delay) in zip(
-                predictions,
-                batch,
-                strict=True,
-            ):
-                is_correct = int(prediction == answer_id)
+            paired_batch = zip(predictions, batch, strict=True)
+            for row, (
+                prediction,
+                (_, answer_id, delay, write_targets),
+            ) in enumerate(paired_batch):
+                is_correct = bool(prediction == answer_id)
+                correctness.append(is_correct)
                 correct += is_correct
                 if delay > decoder.segment_length:
                     outside_window_correct += is_correct
                     outside_window_count += 1
+                    outside_window_correctness.append(is_correct)
                 label = delay_label(delay, limits)
                 totals = delay_counts.setdefault(label, [0, 0])
                 totals[0] += is_correct
                 totals[1] += 1
+                actual_writes = output.writes_applied[
+                    row,
+                    : len(write_targets),
+                ].cpu()
+                counts = _write_decision_counts(actual_writes, write_targets)
+                true_positive += counts[0]
+                false_positive += counts[1]
+                false_negative += counts[2]
+                true_negative += counts[3]
     finally:
         decoder.train(was_training)
 
@@ -420,4 +605,12 @@ def evaluate_continuous_qa1(
         outside_window_correct=outside_window_correct,
         outside_window_count=outside_window_count,
         curve=_build_curve(delay_counts, limits),
+        correctness=tuple(correctness),
+        outside_window_correctness=tuple(outside_window_correctness),
+        writes=WriteDecisionResult(
+            true_positive=true_positive,
+            false_positive=false_positive,
+            false_negative=false_negative,
+            true_negative=true_negative,
+        ),
     )

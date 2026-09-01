@@ -8,6 +8,7 @@ from tinymem.evaluation.continuous_memory import (
     drop_memory,
     evaluate_continuous_answers,
     evaluate_continuous_qa1,
+    paired_accuracy_test,
     shuffle_memory,
     zero_memory,
 )
@@ -107,6 +108,32 @@ def test_continuous_evaluation_returns_exact_counts_and_curve() -> None:
     assert result.correct <= result.count
     assert sum(bucket.count for bucket in result.curve) == result.count
     assert result.to_dict()["count"] == 2
+    assert result.writes.true_positive > 0
+    assert result.writes.false_negative == 0
+
+
+def test_paired_accuracy_test_requires_more_than_a_one_answer_margin() -> None:
+    result = paired_accuracy_test(
+        (True, False),
+        (False, True),
+        alpha=0.05,
+    )
+
+    assert result.accuracy_difference == 0.0
+    assert result.one_sided_p_value == 0.75
+    assert not result.significant
+
+
+def test_paired_accuracy_test_accepts_consistent_normal_memory_wins() -> None:
+    result = paired_accuracy_test(
+        (True,) * 5,
+        (False,) * 5,
+        alpha=0.05,
+    )
+
+    assert result.accuracy_difference == 1.0
+    assert result.one_sided_p_value == 0.03125
+    assert result.significant
 
 
 def test_encoded_validation_evaluation_handles_shuffled_singleton_remainder() -> None:

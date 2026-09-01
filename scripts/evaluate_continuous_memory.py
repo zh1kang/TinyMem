@@ -15,6 +15,7 @@ from tinymem.evaluation.continuous_checkpoint import (
 from tinymem.evaluation.continuous_memory import (
     drop_memory,
     evaluate_continuous_qa1,
+    paired_accuracy_test,
     shuffle_memory,
     zero_memory,
 )
@@ -97,13 +98,24 @@ def main() -> None:
         )
 
     normal = evaluations[0]
+    comparison_alpha = 0.05 / (len(interventions) - 1)
     utility = {
         result.intervention: (
             normal.outside_window_accuracy - result.outside_window_accuracy
         )
         for result in evaluations[1:]
     }
-    exit_criteria_met = all(value > 0.0 for value in utility.values())
+    counterfactual_tests = {
+        result.intervention: paired_accuracy_test(
+            normal.outside_window_correctness,
+            result.outside_window_correctness,
+            alpha=comparison_alpha,
+        )
+        for result in evaluations[1:]
+    }
+    exit_criteria_met = all(
+        result.significant for result in counterfactual_tests.values()
+    )
     evaluation_commit = current_git_commit(repository_root)
     run_directory = create_run_directory(
         repository_root / args.artifact_root,
@@ -131,6 +143,10 @@ def main() -> None:
         "dataset_sha256": _sha256(data_path),
         "evaluations": [result.to_dict() for result in evaluations],
         "outside_window_counterfactual_utility": utility,
+        "outside_window_counterfactual_tests": {
+            name: result.to_dict()
+            for name, result in counterfactual_tests.items()
+        },
         "exit_criteria_met": exit_criteria_met,
     }
     (run_directory / "results.json").write_text(

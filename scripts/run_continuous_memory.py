@@ -19,6 +19,7 @@ from tinymem.evaluation.continuous_memory import (
     drop_memory,
     evaluate_continuous_answers,
     evaluate_continuous_qa1,
+    paired_accuracy_test,
     shuffle_memory,
     zero_memory,
 )
@@ -406,6 +407,7 @@ def main() -> None:
         ("zero", zero_memory),
         ("shuffle", shuffle_memory),
     )
+    comparison_alpha = 0.05 / (len(interventions) - 1)
     validation_evaluations = []
     for name, intervention in interventions:
         print(f"evaluating validation with {name} memory...", flush=True)
@@ -425,11 +427,20 @@ def main() -> None:
         result.intervention: validation_normal.accuracy - result.accuracy
         for result in validation_evaluations[1:]
     }
+    validation_tests = {
+        result.intervention: paired_accuracy_test(
+            validation_normal.correctness,
+            result.correctness,
+            alpha=comparison_alpha,
+        )
+        for result in validation_evaluations[1:]
+    }
     validation_exit_criteria_met = all(
-        utility > 0.0 for utility in validation_utility.values()
+        result.significant for result in validation_tests.values()
     )
     delayed_validation_evaluations = []
     delayed_validation_utility = {}
+    delayed_validation_tests = {}
     if delayed_validation_curriculum:
         for name, intervention in interventions:
             print(
@@ -452,11 +463,19 @@ def main() -> None:
             result.intervention: delayed_normal.accuracy - result.accuracy
             for result in delayed_validation_evaluations[1:]
         }
+        delayed_validation_tests = {
+            result.intervention: paired_accuracy_test(
+                delayed_normal.correctness,
+                result.correctness,
+                alpha=comparison_alpha,
+            )
+            for result in delayed_validation_evaluations[1:]
+        }
         validation_exit_criteria_met = (
             validation_exit_criteria_met
             and all(
-                utility > 0.0
-                for utility in delayed_validation_utility.values()
+                result.significant
+                for result in delayed_validation_tests.values()
             )
         )
 
@@ -493,11 +512,20 @@ def main() -> None:
             )
 
     counterfactual_utility = {}
+    counterfactual_tests = {}
     if evaluations:
         normal = evaluations[0]
         counterfactual_utility = {
             result.intervention: (
                 normal.outside_window_accuracy - result.outside_window_accuracy
+            )
+            for result in evaluations[1:]
+        }
+        counterfactual_tests = {
+            result.intervention: paired_accuracy_test(
+                normal.outside_window_correctness,
+                result.outside_window_correctness,
+                alpha=comparison_alpha,
             )
             for result in evaluations[1:]
         }
@@ -577,6 +605,10 @@ def main() -> None:
             result.to_dict() for result in validation_evaluations
         ],
         "validation_counterfactual_utility": validation_utility,
+        "validation_counterfactual_tests": {
+            name: result.to_dict()
+            for name, result in validation_tests.items()
+        },
         "validation_exit_criteria_met": validation_exit_criteria_met,
         "delayed_validation_evaluations": [
             result.to_dict()
@@ -585,8 +617,16 @@ def main() -> None:
         "delayed_validation_counterfactual_utility": (
             delayed_validation_utility
         ),
+        "delayed_validation_counterfactual_tests": {
+            name: result.to_dict()
+            for name, result in delayed_validation_tests.items()
+        },
         "evaluations": [result.to_dict() for result in evaluations],
         "outside_window_counterfactual_utility": counterfactual_utility,
+        "outside_window_counterfactual_tests": {
+            name: result.to_dict()
+            for name, result in counterfactual_tests.items()
+        },
     }
     (run_directory / "results.json").write_text(
         json.dumps(result_document, indent=2, sort_keys=True) + "\n",
