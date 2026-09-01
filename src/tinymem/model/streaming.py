@@ -26,6 +26,7 @@ class StreamingDecoder:
         *,
         segment_length: int,
         memory_policy: MemoryPolicy | None = None,
+        generator: torch.Generator | None = None,
     ) -> None:
         if not isinstance(model, DecoderOnlyTransformer):
             raise TypeError(
@@ -39,10 +40,13 @@ class StreamingDecoder:
             raise ValueError("segment_length must not exceed max_local_tokens")
         if memory_policy is not None and not isinstance(memory_policy, MemoryPolicy):
             raise TypeError("memory_policy must be a MemoryPolicy or None")
+        if generator is not None and not isinstance(generator, torch.Generator):
+            raise TypeError("generator must be a torch.Generator or None")
 
         self.model = model
         self.segment_length = int(segment_length)
         self.memory_policy = memory_policy
+        self.generator = generator
         self.caches = [
             KVCache(max_length=model.config.max_local_tokens)
             for _ in range(model.config.n_layers)
@@ -159,6 +163,7 @@ class StreamingDecoder:
         self._memory_state = self.memory_policy.update(
             self._memory_state,
             scored_candidates,
+            generator=self.generator,
         )
 
     @torch.no_grad()

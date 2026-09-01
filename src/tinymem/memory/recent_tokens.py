@@ -20,12 +20,15 @@ class RecentTokenMemory(MemoryPolicy):
         self._validate_update(state, candidates)
         if state.token_ids is None or candidates.token_ids is None:
             raise ValueError("state and candidates must have token_ids")
+        if (state.scores is None) != (candidates.scores is None):
+            raise ValueError("state and candidates must agree on score availability")
 
         result = self.initialize(
             batch_size=state.batch_size,
             model_width=state.model_width,
             device=state.values.device,
             dtype=state.values.dtype,
+            with_scores=state.scores is not None,
         )
         assert result.token_ids is not None
         combined_values = torch.cat((state.values, candidates.values), dim=1)
@@ -38,6 +41,11 @@ class RecentTokenMemory(MemoryPolicy):
             (state.positions, candidates.positions),
             dim=1,
         )
+        combined_scores = None
+        if state.scores is not None and candidates.scores is not None:
+            if state.scores.dtype != candidates.scores.dtype:
+                raise ValueError("state and candidate scores must have the same dtype")
+            combined_scores = torch.cat((state.scores, candidates.scores), dim=1)
 
         for batch_index in range(state.batch_size):
             valid_indices = torch.nonzero(
@@ -63,6 +71,10 @@ class RecentTokenMemory(MemoryPolicy):
             result.positions[batch_index, :selected_count].copy_(
                 combined_positions[batch_index, selected_indices]
             )
+            if result.scores is not None and combined_scores is not None:
+                result.scores[batch_index, :selected_count].copy_(
+                    combined_scores[batch_index, selected_indices]
+                )
             result.valid[batch_index, :selected_count] = True
 
         return result

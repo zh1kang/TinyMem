@@ -113,3 +113,12 @@ def test_rope_rejects_sequence_longer_than_cache() -> None:
 
     with pytest.raises(ValueError, match="maximum position"):
         rope(torch.randn(1, 1, 5, 8))
+
+
+def test_rope_allows_more_explicit_memory_positions_than_local_tokens() -> None:
+    rope = RotaryEmbedding(head_dim=8, max_position_embeddings=4)
+    inputs = torch.randn(1, 1, 6, 8)
+
+    outputs = rope(inputs, position_ids=torch.arange(6).unsqueeze(0))
+
+    assert outputs.shape == inputs.shape

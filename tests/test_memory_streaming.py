@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tinymem.memory.heavy_hitter import HeavyHitterMemory
+from tinymem.memory.reservoir import RandomReservoirMemory
 from tinymem.model.config import ModelConfig
 from tinymem.model.streaming import StreamingDecoder
 from tinymem.model.transformer import DecoderOnlyTransformer
@@ -130,4 +131,31 @@ def test_memory_stream_rejects_invalid_policy() -> None:
             make_model(),
             segment_length=2,
             memory_policy=object(),
+        )
+
+
+def test_memory_stream_passes_seeded_generator_to_random_policy() -> None:
+    model = make_model()
+    input_ids = torch.tensor([[1, 2, 3, 4, 5, 6, 7, 8]])
+
+    def run(seed: int) -> torch.Tensor:
+        stream = StreamingDecoder(
+            model,
+            segment_length=2,
+            memory_policy=RandomReservoirMemory(capacity=2),
+            generator=torch.Generator().manual_seed(seed),
+        )
+        for start in range(0, input_ids.shape[1], 2):
+            stream.process_segment(input_ids[:, start : start + 2])
+        return stream.memory_state.positions
+
+    assert torch.equal(run(17), run(17))
+
+
+def test_memory_stream_rejects_invalid_generator() -> None:
+    with pytest.raises(TypeError, match="generator"):
+        StreamingDecoder(
+            make_model(),
+            segment_length=2,
+            generator=object(),
         )

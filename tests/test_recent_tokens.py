@@ -65,6 +65,34 @@ def test_recent_memory_does_not_modify_inputs() -> None:
     assert torch.equal(candidates.positions, original_candidates)
 
 
+def test_recent_memory_preserves_optional_scores_for_budget_accounting() -> None:
+    policy = RecentTokenMemory(capacity=2)
+    state = policy.initialize(batch_size=1, model_width=1, with_scores=True)
+    candidates = MemoryState.empty(
+        batch_size=1,
+        capacity=2,
+        model_width=1,
+        with_scores=True,
+    )
+    fill_row(candidates, 0, [2, 4])
+    assert candidates.scores is not None
+    candidates.scores[0] = torch.tensor([0.25, 0.75])
+
+    result = policy.update(state, candidates)
+
+    assert result.scores is not None
+    torch.testing.assert_close(result.scores, torch.tensor([[0.25, 0.75]]))
+
+
+def test_recent_memory_requires_matching_score_availability() -> None:
+    policy = RecentTokenMemory(capacity=1)
+    state = policy.initialize(batch_size=1, model_width=1, with_scores=True)
+    candidates = MemoryState.empty(batch_size=1, capacity=1, model_width=1)
+
+    with pytest.raises(ValueError, match="score availability"):
+        policy.update(state, candidates)
+
+
 def test_recent_memory_requires_raw_token_ids() -> None:
     policy = RecentTokenMemory(capacity=2)
     state = policy.initialize(batch_size=1, model_width=2)
