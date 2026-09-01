@@ -100,9 +100,15 @@ class CumulativeAttentionTracker:
         """Accumulate current attention and return keys that just expired."""
         if not isinstance(key_positions, torch.Tensor):
             raise TypeError("key_positions must be a torch.Tensor")
+        received_scores = attention_received(attention_prob)
+        tracked_key_count = key_positions.numel()
+        if tracked_key_count == 0:
+            raise ValueError("key_positions must contain at least one tracked key")
+        if tracked_key_count > received_scores.shape[1]:
+            raise ValueError("key_positions exceed the observed attention keys")
         contribution = AttentionScoreState(
             positions=key_positions.clone(),
-            scores=attention_received(attention_prob).detach(),
+            scores=received_scores[:, -tracked_key_count:].detach(),
         )
 
         if self._state is None:

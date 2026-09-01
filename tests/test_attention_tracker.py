@@ -123,6 +123,16 @@ def test_tracker_preserves_batch_rows() -> None:
     )
 
 
+def test_tracker_scores_only_the_tracked_local_key_suffix() -> None:
+    tracker = CumulativeAttentionTracker()
+    probabilities = torch.tensor([[[[0.6, 0.1, 0.3]]]])
+
+    tracker.update(probabilities, torch.tensor([8, 9]))
+
+    assert torch.equal(tracker.state.positions, torch.tensor([8, 9]))
+    torch.testing.assert_close(tracker.state.scores, torch.tensor([[0.1, 0.3]]))
+
+
 def test_tracker_state_is_a_defensive_copy() -> None:
     tracker = CumulativeAttentionTracker()
     tracker.update(attention_prob([[1.0]]), torch.tensor([0]))
