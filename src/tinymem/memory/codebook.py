@@ -36,6 +36,7 @@ class GumbelSoftmaxCodebook(nn.Module):
         self.model_width = int(model_width)
         self.codebook_size = int(codebook_size)
         self.embedding = nn.Embedding(self.codebook_size, self.model_width)
+        nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
 
     def _validate_inputs(
         self,
