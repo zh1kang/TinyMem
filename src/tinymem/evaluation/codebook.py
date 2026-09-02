@@ -363,7 +363,14 @@ def evaluate_codebook_diagnostics(
             ):
                 raise RuntimeError("discrete decoder did not return code traces")
             indices = output.proposed_code_indices
-            valid = output.proposed_code_valid
+            summary_slots = (
+                indices.shape[1] // output.writes_applied.shape[1]
+            )
+            written = output.writes_applied.repeat_interleave(
+                summary_slots,
+                dim=1,
+            )
+            valid = output.proposed_code_valid & written
             quantized = decoder.compressor.codebook.embedding(
                 indices.clamp_min(0)
             )
@@ -402,3 +409,94 @@ def evaluate_codebook_diagnostics(
         prequantized=torch.cat(all_prequantized, dim=1),
         quantized=torch.cat(all_quantized, dim=1),
     )
+
+
+@torch.no_grad()
+def collect_codebook_traces(
+    decoder: SegmentedContinuousDecoder,
+    examples: Sequence[EncodedQAExample],
+    *,
+    batch_size: int,
+    pad_id: int,
+    device: torch.device | str,
+) -> tuple[dict[str, object], ...]:
+    """Return one JSON-compatible discrete-memory trace per example."""
+    if not isinstance(decoder, SegmentedContinuousDecoder):
+        raise TypeError("decoder must be a SegmentedContinuousDecoder")
+    if not isinstance(decoder.compressor, DiscreteMemoryCompressor):
+        raise ValueError("code traces require a discrete compressor")
+    if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
+        raise TypeError("examples must be a sequence")
+    if not examples or not all(
+        isinstance(example, EncodedQAExample) for example in examples
+    ):
+        raise ValueError("examples must contain EncodedQAExample values")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, Integral):
+        raise TypeError("batch_size must be an integer")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+    traces = []
+    was_training = decoder.training
+    decoder.eval()
+    try:
+        for start in range(0, len(examples), int(batch_size)):
+            batch = examples[start : start + int(batch_size)]
+            input_ids, _, token_valid = collate_segmented_answer_supervision(
+                batch,
+                pad_id=pad_id,
+                device=device,
+            )
+            output = decoder(input_ids, token_valid)
+            if (
+                output.proposed_code_indices is None
+                or output.proposed_code_valid is None
+                or output.memory_codes is None
+            ):
+                raise RuntimeError("discrete decoder did not return code traces")
+            summary_slots = decoder.compressor.summary_slots
+            for row, example in enumerate(batch):
+                segment_count = (
+                    len(example.input_ids) + decoder.segment_length - 1
+                ) // decoder.segment_length
+                proposal_count = segment_count * summary_slots
+                codes = output.proposed_code_indices[
+                    row,
+                    :proposal_count,
+                ].reshape(segment_count, summary_slots)
+                valid = output.proposed_code_valid[
+                    row,
+                    :proposal_count,
+                ].reshape(segment_count, summary_slots)
+                writes = output.writes_applied[row, :segment_count]
+                written_codes = [
+                    [int(code) for code in codes[index][valid[index]].cpu()]
+                    if bool(writes[index])
+                    else []
+                    for index in range(segment_count)
+                ]
+                traces.append(
+                    {
+                        "source_example_id": example.source_example_id,
+                        "proposed_codes": [
+                            [
+                                int(code)
+                                for code in codes[index][valid[index]].cpu()
+                            ]
+                            for index in range(segment_count)
+                        ],
+                        "writes_applied": [
+                            bool(value) for value in writes.cpu()
+                        ],
+                        "written_codes": written_codes,
+                        "final_memory_codes": [
+                            int(code)
+                            for code in output.memory_codes[row][
+                                output.memory_valid[row]
+                            ].cpu()
+                        ],
+                    }
+                )
+    finally:
+        decoder.train(was_training)
+    return tuple(traces)

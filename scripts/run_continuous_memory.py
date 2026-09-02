@@ -25,6 +25,7 @@ from tinymem.evaluation.continuous_memory import (
     zero_memory,
 )
 from tinymem.evaluation.codebook import (
+    collect_codebook_traces,
     continuous_memory_bytes,
     discrete_memory_budget,
     evaluate_codebook_diagnostics,
@@ -602,16 +603,6 @@ def main() -> None:
         )
     )
 
-    codebook_diagnostics = None
-    if args.compressor == "discrete":
-        codebook_diagnostics = evaluate_codebook_diagnostics(
-            decoder,
-            validation_curriculum,
-            batch_size=args.eval_batch_size,
-            pad_id=vocabulary.token_to_id["<pad>"],
-            device=device,
-        )
-
     write_calibration = None
     if args.write_calibration_max_fpr is not None:
         if not delayed_validation_curriculum:
@@ -629,6 +620,24 @@ def main() -> None:
         if not isinstance(decoder.bank, GatedRecurrentMemoryBank):
             raise TypeError("write calibration requires a gated memory bank")
         decoder.bank.set_write_threshold(write_calibration.threshold)
+
+    codebook_diagnostics = None
+    codebook_traces: tuple[dict[str, object], ...] = ()
+    if args.compressor == "discrete":
+        codebook_diagnostics = evaluate_codebook_diagnostics(
+            decoder,
+            validation_curriculum,
+            batch_size=args.eval_batch_size,
+            pad_id=vocabulary.token_to_id["<pad>"],
+            device=device,
+        )
+        codebook_traces = collect_codebook_traces(
+            decoder,
+            validation_curriculum,
+            batch_size=args.eval_batch_size,
+            pad_id=vocabulary.token_to_id["<pad>"],
+            device=device,
+        )
 
     interventions = (
         ("normal", None),
@@ -921,6 +930,14 @@ def main() -> None:
         json.dumps(result_document, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    if codebook_traces:
+        (run_directory / "codebook_trace.jsonl").write_text(
+            "".join(
+                json.dumps(trace, sort_keys=True) + "\n"
+                for trace in codebook_traces
+            ),
+            encoding="utf-8",
+        )
     save_checkpoint(
         run_directory / "checkpoint.pt",
         model=decoder,

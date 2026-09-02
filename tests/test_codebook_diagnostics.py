@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tinymem.evaluation.codebook import (
+    collect_codebook_traces,
     continuous_memory_bytes,
     discrete_memory_budget,
     evaluate_codebook_diagnostics,
@@ -156,6 +157,21 @@ def test_evaluate_codebook_diagnostics_aggregates_decoder_traces() -> None:
     assert len(result.counts) == 4
     assert 1 <= result.active_codes <= 4
     assert result.quantization_mse >= 0
+
+    traces = collect_codebook_traces(
+        decoder,
+        examples,
+        batch_size=2,
+        pad_id=0,
+        device="cpu",
+    )
+
+    assert len(traces) == 2
+    assert traces[0]["source_example_id"] == "a"
+    assert len(traces[0]["proposed_codes"]) == 2
+    assert len(traces[0]["writes_applied"]) == 2
+    assert traces[0]["written_codes"] == traces[0]["proposed_codes"]
+    assert traces[0]["final_memory_codes"]
 
 
 @pytest.mark.parametrize("continuous_bytes", [True, 0, 16, 2.5, "17"])
