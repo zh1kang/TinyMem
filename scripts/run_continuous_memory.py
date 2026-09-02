@@ -374,12 +374,6 @@ def main() -> None:
                 )
             eligible_index = 0
             for example in train_examples:
-                if not qa1_requires_cross_segment_memory(
-                    example,
-                    vocabulary,
-                    segment_length=args.segment_length,
-                ):
-                    continue
                 delay = delay_levels[eligible_index % len(delay_levels)]
                 start = (eligible_index * args.segment_length) % (
                     len(training_filler_ids) - delay + 1
@@ -398,12 +392,6 @@ def main() -> None:
             delay = validation_distributed_distractor_tokens
             eligible_index = 0
             for example in validation_examples:
-                if not qa1_requires_cross_segment_memory(
-                    example,
-                    vocabulary,
-                    segment_length=args.segment_length,
-                ):
-                    continue
                 start = (eligible_index * args.segment_length) % (
                     len(validation_filler_ids) - delay + 1
                 )
