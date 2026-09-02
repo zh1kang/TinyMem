@@ -7,6 +7,7 @@ from tinymem.evaluation.continuous_checkpoint import (
     ADAPTIVE_DISCRETE_ARCHITECTURE,
     ADAPTIVE_MULTISLOT_ARCHITECTURE,
     DISCRETE_TOKEN_GATED_ARCHITECTURE,
+    FIXED_MULTISLOT_ARCHITECTURE,
     GATED_MULTISLOT_ARCHITECTURE,
     TOKEN_GATED_MULTISLOT_ARCHITECTURE,
     load_continuous_checkpoint,
@@ -14,7 +15,10 @@ from tinymem.evaluation.continuous_checkpoint import (
 from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.continuous import MultiSlotAttentionMemoryCompressor
 from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
-from tinymem.memory.recurrent_memory import GatedRecurrentMemoryBank
+from tinymem.memory.recurrent_memory import (
+    GatedRecurrentMemoryBank,
+    RecurrentMemoryBank,
+)
 from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.config import (
     ExperimentConfig,
@@ -78,12 +82,16 @@ def write_checkpoint(
     decoder = SegmentedContinuousDecoder(
         DecoderOnlyTransformer(config.model),
         compressor,
-        GatedRecurrentMemoryBank(
-            capacity=4,
-            model_width=8,
-            write_threshold=(
-                0.5 if write_threshold is None else write_threshold
-            ),
+        (
+            RecurrentMemoryBank(capacity=4, model_width=8)
+            if architecture == FIXED_MULTISLOT_ARCHITECTURE
+            else GatedRecurrentMemoryBank(
+                capacity=4,
+                model_width=8,
+                write_threshold=(
+                    0.5 if write_threshold is None else write_threshold
+                ),
+            )
         ),
         segment_length=2,
         write_gate=(
@@ -119,7 +127,9 @@ def write_checkpoint(
         "architecture": architecture,
         "vocabulary": list(vocabulary.id_to_token),
     }
-    if write_threshold is not None:
+    if architecture == FIXED_MULTISLOT_ARCHITECTURE:
+        extra["write_threshold"] = None
+    elif write_threshold is not None:
         extra["write_threshold"] = write_threshold
     if memory_position_mode != "absolute":
         extra["memory_position_mode"] = memory_position_mode
@@ -154,6 +164,17 @@ def test_load_continuous_checkpoint_reconstructs_trained_architecture(
     assert loaded.decoder.bank.write_threshold == 0.5
     assert loaded.decoder.write_gate is None
     assert loaded.decoder.memory_position_mode == "absolute"
+
+
+def test_load_continuous_checkpoint_reconstructs_fixed_fifo_memory(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "checkpoint.pt"
+    write_checkpoint(path, architecture=FIXED_MULTISLOT_ARCHITECTURE)
+
+    loaded = load_continuous_checkpoint(path, device="cpu")
+
+    assert type(loaded.decoder.bank) is RecurrentMemoryBank
 
 
 def test_load_continuous_checkpoint_reconstructs_token_gate_and_threshold(

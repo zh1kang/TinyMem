@@ -9,7 +9,10 @@ from tinymem.data.vocabulary import SPECIAL_TOKENS, ControlledVocabulary
 from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.continuous import MultiSlotAttentionMemoryCompressor
 from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
-from tinymem.memory.recurrent_memory import GatedRecurrentMemoryBank
+from tinymem.memory.recurrent_memory import (
+    GatedRecurrentMemoryBank,
+    RecurrentMemoryBank,
+)
 from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.config import ExperimentConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
@@ -20,6 +23,9 @@ from tinymem.training.checkpointing import CHECKPOINT_FORMAT_VERSION
 
 GATED_MULTISLOT_ARCHITECTURE = (
     "segmented_continuous_multislot_attention_pool_gated_update"
+)
+FIXED_MULTISLOT_ARCHITECTURE = (
+    "segmented_continuous_multislot_attention_pool_fifo_update"
 )
 TOKEN_GATED_MULTISLOT_ARCHITECTURE = (
     "segmented_continuous_multislot_attention_pool_token_gated_update"
@@ -78,6 +84,7 @@ def load_continuous_checkpoint(
     architecture = extra.get("architecture")
     if architecture not in (
         GATED_MULTISLOT_ARCHITECTURE,
+        FIXED_MULTISLOT_ARCHITECTURE,
         TOKEN_GATED_MULTISLOT_ARCHITECTURE,
         DISCRETE_TOKEN_GATED_ARCHITECTURE,
         ADAPTIVE_MULTISLOT_ARCHITECTURE,
@@ -103,13 +110,17 @@ def load_continuous_checkpoint(
             "continuous checkpoint has an invalid memory position mode"
         )
     write_threshold = extra.get("write_threshold", 0.5)
-    if isinstance(write_threshold, bool) or not isinstance(
-        write_threshold,
-        (int, float),
-    ):
-        raise ValueError("continuous checkpoint has an invalid write threshold")
-    if not 0 < write_threshold <= 1:
-        raise ValueError("continuous checkpoint has an invalid write threshold")
+    if architecture == FIXED_MULTISLOT_ARCHITECTURE:
+        if write_threshold is not None:
+            raise ValueError("fixed FIFO checkpoint must not have a write threshold")
+    else:
+        if isinstance(write_threshold, bool) or not isinstance(
+            write_threshold,
+            (int, float),
+        ):
+            raise ValueError("continuous checkpoint has an invalid write threshold")
+        if not 0 < write_threshold <= 1:
+            raise ValueError("continuous checkpoint has an invalid write threshold")
 
     state = payload.get("model_state")
     if not isinstance(state, dict):
@@ -204,10 +215,17 @@ def load_continuous_checkpoint(
     decoder = SegmentedContinuousDecoder(
         DecoderOnlyTransformer(config.model),
         compressor,
-        GatedRecurrentMemoryBank(
-            capacity=config.memory.n_slots,
-            model_width=config.model.d_model,
-            write_threshold=float(write_threshold),
+        (
+            RecurrentMemoryBank(
+                capacity=config.memory.n_slots,
+                model_width=config.model.d_model,
+            )
+            if architecture == FIXED_MULTISLOT_ARCHITECTURE
+            else GatedRecurrentMemoryBank(
+                capacity=config.memory.n_slots,
+                model_width=config.model.d_model,
+                write_threshold=float(write_threshold),
+            )
         ),
         segment_length=config.stream.segment_length,
         write_gate=(
