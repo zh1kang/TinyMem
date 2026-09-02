@@ -20,9 +20,11 @@ from tinymem.model.config import (
     ExperimentConfig,
     MemoryConfig,
     ModelConfig,
+    MTPConfig,
     StreamConfig,
 )
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
+from tinymem.model.multi_token_prediction import MultiTokenPredictionHeads
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.checkpointing import save_checkpoint
 
@@ -35,6 +37,7 @@ def write_checkpoint(
     memory_position_mode: str = "absolute",
     write_gate_kernel_size: int = 3,
     controller_hidden_width: int = 6,
+    mtp_horizons: tuple[int, ...] = (),
 ) -> ExperimentConfig:
     vocabulary = ControlledVocabulary([" ", "Mary", "kitchen"])
     config = ExperimentConfig(
@@ -52,6 +55,11 @@ def write_checkpoint(
             codebook_size=8,
             code_dim=8,
             codes_per_write=2,
+        ),
+        mtp=MTPConfig(
+            enabled=bool(mtp_horizons),
+            horizons=mtp_horizons or (2, 3, 4),
+            loss_weight=0.2,
         ),
     )
     compressor = (
@@ -100,6 +108,11 @@ def write_checkpoint(
             )
             else None
         ),
+        mtp_heads=(
+            MultiTokenPredictionHeads(8, len(vocabulary), mtp_horizons)
+            if mtp_horizons
+            else None
+        ),
         memory_position_mode=memory_position_mode,
     )
     extra: dict[str, object] = {
@@ -110,6 +123,8 @@ def write_checkpoint(
         extra["write_threshold"] = write_threshold
     if memory_position_mode != "absolute":
         extra["memory_position_mode"] = memory_position_mode
+    if mtp_horizons:
+        extra["mtp_horizons"] = list(mtp_horizons)
     save_checkpoint(
         path,
         model=decoder,
@@ -208,6 +223,22 @@ def test_load_continuous_checkpoint_reconstructs_adaptive_controller(
         MultiSlotAttentionMemoryCompressor,
         DiscreteMemoryCompressor,
     ))
+
+
+def test_load_continuous_checkpoint_reconstructs_mtp_heads(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "checkpoint.pt"
+    write_checkpoint(
+        path,
+        architecture=GATED_MULTISLOT_ARCHITECTURE,
+        mtp_horizons=(2, 3, 4),
+    )
+
+    loaded = load_continuous_checkpoint(path, device="cpu")
+
+    assert loaded.decoder.mtp_heads is not None
+    assert loaded.decoder.mtp_heads.horizons == (2, 3, 4)
 
 
 def test_load_continuous_checkpoint_rejects_unknown_architecture(

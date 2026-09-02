@@ -13,6 +13,7 @@ from tinymem.memory.recurrent_memory import GatedRecurrentMemoryBank
 from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.config import ExperimentConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
+from tinymem.model.multi_token_prediction import MultiTokenPredictionHeads
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.checkpointing import CHECKPOINT_FORMAT_VERSION
 
@@ -113,6 +114,17 @@ def load_continuous_checkpoint(
     state = payload.get("model_state")
     if not isinstance(state, dict):
         raise ValueError("continuous checkpoint must contain model state")
+    raw_mtp_horizons = extra.get("mtp_horizons", [])
+    if not isinstance(raw_mtp_horizons, list) or any(
+        isinstance(horizon, bool) or not isinstance(horizon, int)
+        for horizon in raw_mtp_horizons
+    ):
+        raise ValueError("continuous checkpoint has invalid MTP horizons")
+    mtp_horizons = tuple(raw_mtp_horizons)
+    if config.mtp.enabled and mtp_horizons != config.mtp.horizons:
+        raise ValueError("checkpoint MTP horizons do not match its config")
+    if not config.mtp.enabled and mtp_horizons:
+        raise ValueError("checkpoint contains MTP heads while MTP is disabled")
     is_discrete = architecture in (
         DISCRETE_TOKEN_GATED_ARCHITECTURE,
         ADAPTIVE_DISCRETE_ARCHITECTURE,
@@ -216,6 +228,15 @@ def load_continuous_checkpoint(
                 hidden_width=controller_hidden_width,
             )
             if is_adaptive
+            else None
+        ),
+        mtp_heads=(
+            MultiTokenPredictionHeads(
+                config.model.d_model,
+                config.model.vocab_size,
+                mtp_horizons,
+            )
+            if mtp_horizons
             else None
         ),
         memory_position_mode=memory_position_mode,
