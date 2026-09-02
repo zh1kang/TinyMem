@@ -7,6 +7,7 @@ from tinymem.memory.continuous import (
     MeanPoolMemoryCompressor,
     MultiSlotAttentionMemoryCompressor,
 )
+from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.memory.recurrent_memory import (
     GatedRecurrentMemoryBank,
     RecurrentMemoryBank,
@@ -64,6 +65,117 @@ def test_segmented_decoder_returns_logits_and_fixed_memory() -> None:
     assert output.memory_positions.shape == (1, 2)
     assert torch.equal(output.memory_valid, torch.tensor([[True, True]]))
     assert torch.equal(output.memory_positions, torch.tensor([[1, 3]]))
+    assert output.memory_codes is None
+    assert output.proposed_code_indices is None
+    assert output.code_probabilities is None
+    assert output.proposed_code_valid is None
+
+
+def test_segmented_decoder_stores_discrete_codes_at_evaluation() -> None:
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    compressor = DiscreteMemoryCompressor(
+        8,
+        codebook_size=6,
+        summary_slots=1,
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        compressor,
+        RecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+    )
+    decoder.eval()
+
+    output = decoder(
+        torch.tensor([[1, 2, 3, 4]]),
+        torch.ones(1, 4, dtype=torch.bool),
+    )
+
+    assert output.memory_codes is not None
+    assert output.memory_codes.shape == (1, 2)
+    assert (output.memory_codes >= 0).all()
+    torch.testing.assert_close(
+        output.memory,
+        compressor.codebook.embedding(output.memory_codes),
+    )
+    assert output.proposed_code_indices is not None
+    assert output.proposed_code_indices.shape == (1, 2)
+    assert output.code_probabilities is not None
+    assert output.code_probabilities.shape == (1, 2, 6)
+    assert output.proposed_code_valid is not None
+    assert output.proposed_code_valid.all()
+
+
+def test_later_segment_loss_reaches_discrete_compressor() -> None:
+    torch.manual_seed(19)
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    compressor = DiscreteMemoryCompressor(
+        8,
+        codebook_size=6,
+        summary_slots=1,
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        compressor,
+        RecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+    )
+
+    output = decoder(
+        torch.tensor([[1, 2, 3, 4]]),
+        torch.ones(1, 4, dtype=torch.bool),
+    )
+    output.logits[:, 2:].square().mean().backward()
+
+    assert compressor.logit_projection.weight.grad is not None
+    assert torch.count_nonzero(compressor.logit_projection.weight.grad) > 0
+    assert compressor.codebook.embedding.weight.grad is not None
+    assert torch.count_nonzero(compressor.codebook.embedding.weight.grad) > 0
+
+
+def test_invalid_segment_does_not_replace_discrete_codes() -> None:
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        DiscreteMemoryCompressor(
+            8,
+            codebook_size=6,
+            summary_slots=1,
+        ),
+        RecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+    )
+    decoder.eval()
+
+    output = decoder(
+        torch.tensor([[1, 2, 0, 0]]),
+        torch.tensor([[True, True, False, False]]),
+    )
+
+    assert output.memory_codes is not None
+    assert output.memory_codes[0, 0] == -1
+    assert output.memory_codes[0, 1] >= 0
 
 
 def test_virtual_memory_positions_form_a_bounded_prefix() -> None:

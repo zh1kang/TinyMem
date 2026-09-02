@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from tinymem.memory.continuous import ContinuousMemoryCompressor
+from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.memory.recurrent_memory import (
     GatedRecurrentMemoryBank,
     RecurrentMemoryBank,
@@ -24,7 +25,7 @@ MEMORY_POSITION_MODES = frozenset(("absolute", "virtual"))
 
 @dataclass(frozen=True)
 class SegmentedContinuousOutput:
-    """Hold logits and the final explicit continuous-memory state."""
+    """Hold logits and the final explicit segmented-memory state."""
 
     logits: torch.Tensor
     memory: torch.Tensor
@@ -32,6 +33,10 @@ class SegmentedContinuousOutput:
     memory_positions: torch.Tensor
     writes_applied: torch.Tensor
     write_logits: torch.Tensor | None
+    memory_codes: torch.Tensor | None
+    proposed_code_indices: torch.Tensor | None
+    code_probabilities: torch.Tensor | None
+    proposed_code_valid: torch.Tensor | None
 
 
 class SegmentedContinuousDecoder(nn.Module):
@@ -175,6 +180,41 @@ class SegmentedContinuousDecoder(nn.Module):
         virtual_positions = position_offset - valid_count + ranks - 1
         return virtual_positions.clamp_min(0).masked_fill(~memory_valid, -1)
 
+    @staticmethod
+    def _update_slot_state(
+        state: torch.Tensor,
+        proposed: torch.Tensor,
+        write_applied: torch.Tensor,
+    ) -> torch.Tensor:
+        write_count = proposed.shape[1]
+        shifted = torch.cat((state[:, write_count:], proposed), dim=1)
+        expanded_write = write_applied.reshape(
+            write_applied.shape[0],
+            *((1,) * (state.ndim - 1)),
+        )
+        return torch.where(expanded_write, shifted, state)
+
+    @staticmethod
+    def _update_assignment_state(
+        state: torch.Tensor,
+        proposed: torch.Tensor,
+        write_applied: torch.Tensor,
+        write_logits: torch.Tensor | None,
+    ) -> torch.Tensor:
+        write_count = proposed.shape[1]
+        shifted = torch.cat((state[:, write_count:], proposed), dim=1)
+        if write_logits is None:
+            return torch.where(write_applied.unsqueeze(-1), shifted, state)
+        write_probability = torch.sigmoid(write_logits)
+        straight_through_write = (
+            write_applied.to(dtype=write_probability.dtype)
+            + write_probability
+            - write_probability.detach()
+        )
+        return state + straight_through_write.unsqueeze(-1) * (
+            shifted - state
+        )
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -217,6 +257,35 @@ class SegmentedContinuousDecoder(nn.Module):
         segment_logits = []
         segment_writes = []
         segment_write_logits = []
+        discrete_compressor = (
+            self.compressor
+            if isinstance(self.compressor, DiscreteMemoryCompressor)
+            else None
+        )
+        memory_codes = (
+            torch.full(
+                (input_ids.shape[0], self.bank.capacity),
+                -1,
+                dtype=torch.long,
+                device=input_ids.device,
+            )
+            if discrete_compressor is not None
+            else None
+        )
+        memory_assignments = (
+            torch.zeros(
+                input_ids.shape[0],
+                self.bank.capacity,
+                discrete_compressor.codebook_size,
+                dtype=memory.dtype,
+                device=input_ids.device,
+            )
+            if discrete_compressor is not None and self.training
+            else None
+        )
+        proposed_code_indices = []
+        code_probabilities = []
+        proposed_code_valid = []
         for offset in range(0, input_ids.shape[1], self.segment_length):
             end = offset + self.segment_length
             segment_ids = input_ids[:, offset:end]
@@ -251,16 +320,25 @@ class SegmentedContinuousDecoder(nn.Module):
             )
             segment_logits.append(self.model.lm_head(hidden_states))
 
-            summary, summary_valid = self.compressor(
-                hidden_states,
-                segment_valid,
-            )
+            discrete_output = None
+            if discrete_compressor is None:
+                summary, summary_valid = self.compressor(
+                    hidden_states,
+                    segment_valid,
+                )
+            else:
+                discrete_output = discrete_compressor.compress(
+                    hidden_states,
+                    segment_valid,
+                )
+                summary = discrete_output.values
+                summary_valid = discrete_output.valid
             summary_positions = self._summary_positions(
                 segment_valid,
                 position_offset=offset,
             ).expand(-1, summary.shape[1])
             if self.write_gate is None:
-                memory, memory_valid, write_applied, write_logits = self.bank(
+                next_memory, memory_valid, write_applied, write_logits = self.bank(
                     memory,
                     memory_valid,
                     summary,
@@ -272,13 +350,42 @@ class SegmentedContinuousDecoder(nn.Module):
                     segment_valid,
                 )
                 assert isinstance(self.bank, GatedRecurrentMemoryBank)
-                memory, memory_valid, write_applied, write_logits = self.bank(
+                next_memory, memory_valid, write_applied, write_logits = self.bank(
                     memory,
                     memory_valid,
                     summary,
                     summary_valid,
                     external_write_logits=external_write_logits,
                 )
+            if discrete_output is None:
+                memory = next_memory
+            else:
+                assert memory_codes is not None
+                memory_codes = self._update_slot_state(
+                    memory_codes,
+                    discrete_output.indices,
+                    write_applied,
+                )
+                if self.training:
+                    assert memory_assignments is not None
+                    memory_assignments = self._update_assignment_state(
+                        memory_assignments,
+                        discrete_output.assignments,
+                        write_applied,
+                        write_logits,
+                    )
+                    memory = (
+                        memory_assignments
+                        @ discrete_compressor.codebook.embedding.weight
+                    )
+                else:
+                    memory = discrete_compressor.codebook.embedding(
+                        memory_codes.clamp_min(0)
+                    )
+                    memory = memory * memory_valid.unsqueeze(-1)
+                proposed_code_indices.append(discrete_output.indices)
+                code_probabilities.append(discrete_output.probabilities)
+                proposed_code_valid.append(discrete_output.valid)
             memory_positions = self._update_positions(
                 memory_positions,
                 summary_positions,
@@ -297,6 +404,22 @@ class SegmentedContinuousDecoder(nn.Module):
             write_logits=(
                 torch.cat(segment_write_logits, dim=1)
                 if segment_write_logits
+                else None
+            ),
+            memory_codes=memory_codes,
+            proposed_code_indices=(
+                torch.cat(proposed_code_indices, dim=1)
+                if proposed_code_indices
+                else None
+            ),
+            code_probabilities=(
+                torch.cat(code_probabilities, dim=1)
+                if code_probabilities
+                else None
+            ),
+            proposed_code_valid=(
+                torch.cat(proposed_code_valid, dim=1)
+                if proposed_code_valid
                 else None
             ),
         )
