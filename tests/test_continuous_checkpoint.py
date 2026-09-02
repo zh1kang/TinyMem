@@ -4,11 +4,13 @@ import pytest
 
 from tinymem.data.vocabulary import ControlledVocabulary
 from tinymem.evaluation.continuous_checkpoint import (
+    DISCRETE_TOKEN_GATED_ARCHITECTURE,
     GATED_MULTISLOT_ARCHITECTURE,
     TOKEN_GATED_MULTISLOT_ARCHITECTURE,
     load_continuous_checkpoint,
 )
 from tinymem.memory.continuous import MultiSlotAttentionMemoryCompressor
+from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.memory.recurrent_memory import GatedRecurrentMemoryBank
 from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.config import (
@@ -48,9 +50,18 @@ def write_checkpoint(
             codes_per_write=2,
         ),
     )
+    compressor = (
+        DiscreteMemoryCompressor(
+            8,
+            codebook_size=8,
+            summary_slots=2,
+        )
+        if architecture == DISCRETE_TOKEN_GATED_ARCHITECTURE
+        else MultiSlotAttentionMemoryCompressor(8, summary_slots=2)
+    )
     decoder = SegmentedContinuousDecoder(
         DecoderOnlyTransformer(config.model),
-        MultiSlotAttentionMemoryCompressor(8, summary_slots=2),
+        compressor,
         GatedRecurrentMemoryBank(
             capacity=4,
             model_width=8,
@@ -61,7 +72,11 @@ def write_checkpoint(
         segment_length=2,
         write_gate=(
             TokenSegmentWriteGate(8, kernel_size=write_gate_kernel_size)
-            if architecture == TOKEN_GATED_MULTISLOT_ARCHITECTURE
+            if architecture
+            in (
+                TOKEN_GATED_MULTISLOT_ARCHITECTURE,
+                DISCRETE_TOKEN_GATED_ARCHITECTURE,
+            )
             else None
         ),
         memory_position_mode=memory_position_mode,
@@ -123,6 +138,28 @@ def test_load_continuous_checkpoint_reconstructs_token_gate_and_threshold(
     assert loaded.decoder.bank.write_threshold == 0.81
     assert loaded.decoder.memory_position_mode == "virtual"
     assert loaded.decoder.write_gate.kernel_size == 11
+
+
+def test_load_continuous_checkpoint_reconstructs_discrete_codebook(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "checkpoint.pt"
+    write_checkpoint(
+        path,
+        architecture=DISCRETE_TOKEN_GATED_ARCHITECTURE,
+        write_threshold=0.75,
+        write_gate_kernel_size=5,
+    )
+
+    loaded = load_continuous_checkpoint(path, device="cpu")
+
+    assert isinstance(loaded.decoder.compressor, DiscreteMemoryCompressor)
+    assert loaded.decoder.compressor.codebook_size == 8
+    assert loaded.decoder.compressor.summary_slots == 2
+    assert loaded.decoder.compressor.temperature == pytest.approx(1.0)
+    assert loaded.decoder.bank.write_threshold == 0.75
+    assert isinstance(loaded.decoder.write_gate, TokenSegmentWriteGate)
+    assert loaded.decoder.write_gate.kernel_size == 5
 
 
 def test_load_continuous_checkpoint_rejects_unknown_architecture(

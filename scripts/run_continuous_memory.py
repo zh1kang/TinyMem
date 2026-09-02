@@ -24,7 +24,13 @@ from tinymem.evaluation.continuous_memory import (
     shuffle_memory,
     zero_memory,
 )
+from tinymem.evaluation.codebook import (
+    continuous_memory_bytes,
+    discrete_memory_budget,
+    evaluate_codebook_diagnostics,
+)
 from tinymem.evaluation.continuous_checkpoint import (
+    DISCRETE_TOKEN_GATED_ARCHITECTURE,
     GATED_MULTISLOT_ARCHITECTURE,
     TOKEN_GATED_MULTISLOT_ARCHITECTURE,
 )
@@ -33,6 +39,7 @@ from tinymem.memory.continuous import (
     MeanPoolMemoryCompressor,
     MultiSlotAttentionMemoryCompressor,
 )
+from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.memory.recurrent_memory import (
     GatedRecurrentMemoryBank,
     RecurrentMemoryBank,
@@ -49,6 +56,7 @@ from tinymem.training.continuous import (
     train_continuous_answer_supervision,
 )
 from tinymem.training.controlled_qa import encode_qa_example
+from tinymem.training.discrete import GumbelTemperatureSchedule
 from tinymem.utils.device import select_device
 from tinymem.utils.experiment import create_run_directory, current_git_commit
 from tinymem.utils.seed import seed_everything
@@ -68,10 +76,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--capacity", type=int, default=12)
     parser.add_argument(
         "--compressor",
-        choices=("mean", "attention", "multislot_attention"),
+        choices=("mean", "attention", "multislot_attention", "discrete"),
         default="mean",
     )
     parser.add_argument("--summaries-per-segment", type=int, default=4)
+    parser.add_argument("--codebook-size", type=int, default=256)
+    parser.add_argument("--gumbel-temperature-start", type=float, default=2.0)
+    parser.add_argument("--gumbel-temperature-end", type=float, default=0.5)
+    parser.add_argument("--gumbel-anneal-steps", type=int, default=2000)
+    parser.add_argument("--codebook-usage-loss-weight", type=float, default=0.0)
     parser.add_argument(
         "--memory-update",
         choices=("fifo", "gated"),
@@ -196,6 +209,12 @@ def main() -> None:
         raise ValueError("segment length and capacity must be positive")
     if not 0 < args.summaries_per_segment <= args.capacity:
         raise ValueError("summaries per segment must be between one and capacity")
+    if args.codebook_size <= 1:
+        raise ValueError("codebook size must be greater than one")
+    if args.gumbel_anneal_steps <= 0:
+        raise ValueError("Gumbel anneal steps must be positive")
+    if args.codebook_usage_loss_weight < 0:
+        raise ValueError("codebook usage loss weight must be nonnegative")
     if args.learning_rate <= 0 or args.weight_decay < 0:
         raise ValueError("learning rate must be positive and weight decay nonnegative")
     if args.gradient_clip_norm <= 0:
@@ -226,8 +245,23 @@ def main() -> None:
         raise ValueError("write loss requires gated memory updates")
     if args.write_gate == "token_conv" and args.memory_update != "gated":
         raise ValueError("token convolution write gate requires gated memory updates")
-    if args.write_gate == "token_conv" and args.compressor != "multislot_attention":
-        raise ValueError("token convolution write gate requires multislot attention")
+    if args.write_gate == "token_conv" and args.compressor not in (
+        "multislot_attention",
+        "discrete",
+    ):
+        raise ValueError(
+            "token convolution write gate requires multislot or discrete attention"
+        )
+    if args.compressor == "discrete" and (
+        args.memory_update != "gated" or args.write_gate != "token_conv"
+    ):
+        raise ValueError(
+            "discrete memory requires gated updates and the token convolution gate"
+        )
+    if args.compressor != "discrete" and args.codebook_usage_loss_weight:
+        raise ValueError(
+            "codebook usage loss weight requires the discrete compressor"
+        )
     if (
         args.write_gate_kernel_size <= 0
         or args.write_gate_kernel_size % 2 == 0
@@ -265,7 +299,20 @@ def main() -> None:
     if args.segment_length > model.config.max_local_tokens:
         raise ValueError("segment length must not exceed the base local window")
 
-    if args.compressor == "mean":
+    temperature_schedule = None
+    if args.compressor == "discrete":
+        temperature_schedule = GumbelTemperatureSchedule(
+            start=args.gumbel_temperature_start,
+            end=args.gumbel_temperature_end,
+            anneal_steps=args.gumbel_anneal_steps,
+        )
+        compressor = DiscreteMemoryCompressor(
+            model.config.d_model,
+            codebook_size=args.codebook_size,
+            summary_slots=args.summaries_per_segment,
+            temperature=args.gumbel_temperature_start,
+        )
+    elif args.compressor == "mean":
         compressor = MeanPoolMemoryCompressor(model.config.d_model)
     elif args.compressor == "attention":
         compressor = AttentionPoolMemoryCompressor(model.config.d_model)
@@ -525,6 +572,12 @@ def main() -> None:
                 pad_id=vocabulary.token_to_id["<pad>"],
                 device=device,
                 seed=args.seed,
+                codebook_usage_loss_weight=(
+                    args.codebook_usage_loss_weight
+                    if args.compressor == "discrete"
+                    else 0.0
+                ),
+                temperature_schedule=temperature_schedule,
             )
         )
     losses.extend(
@@ -539,8 +592,25 @@ def main() -> None:
             device=device,
             seed=args.seed + args.memory_warmup_steps,
             write_loss_weight=args.write_loss_weight,
+            codebook_usage_loss_weight=(
+                args.codebook_usage_loss_weight
+                if args.compressor == "discrete"
+                else 0.0
+            ),
+            temperature_schedule=temperature_schedule,
+            temperature_step_offset=args.memory_warmup_steps,
         )
     )
+
+    codebook_diagnostics = None
+    if args.compressor == "discrete":
+        codebook_diagnostics = evaluate_codebook_diagnostics(
+            decoder,
+            validation_curriculum,
+            batch_size=args.eval_batch_size,
+            pad_id=vocabulary.token_to_id["<pad>"],
+            device=device,
+        )
 
     write_calibration = None
     if args.write_calibration_max_fpr is not None:
@@ -702,9 +772,11 @@ def main() -> None:
         memory=replace(
             base_config.memory,
             n_slots=args.capacity,
+            codebook_size=args.codebook_size,
+            code_dim=model.config.d_model,
             codes_per_write=(
                 args.summaries_per_segment
-                if args.compressor == "multislot_attention"
+                if args.compressor in ("multislot_attention", "discrete")
                 else 1
             ),
         ),
@@ -776,16 +848,47 @@ def main() -> None:
         "capacity": args.capacity,
         "summaries_per_segment": (
             args.summaries_per_segment
-            if args.compressor == "multislot_attention"
+            if args.compressor in ("multislot_attention", "discrete")
             else 1
         ),
-        "memory_bytes_per_example": args.capacity
-        * (
-            model.config.d_model
-            * model.token_embedding.weight.element_size()
-            + 1
-            + 8
+        "memory_bytes_per_example": (
+            discrete_memory_budget(
+                capacity=args.capacity,
+                codebook_size=args.codebook_size,
+                model_width=model.config.d_model,
+                element_size=model.token_embedding.weight.element_size(),
+            ).tensor_bytes
+            if args.compressor == "discrete"
+            else continuous_memory_bytes(
+                capacity=args.capacity,
+                model_width=model.config.d_model,
+                element_size=model.token_embedding.weight.element_size(),
+            )
         ),
+        "discrete_memory_budget": (
+            discrete_memory_budget(
+                capacity=args.capacity,
+                codebook_size=args.codebook_size,
+                model_width=model.config.d_model,
+                element_size=model.token_embedding.weight.element_size(),
+            ).to_dict()
+            if args.compressor == "discrete"
+            else None
+        ),
+        "codebook_diagnostics": (
+            codebook_diagnostics.to_dict()
+            if codebook_diagnostics is not None
+            else None
+        ),
+        "gumbel_temperature_start": args.gumbel_temperature_start,
+        "gumbel_temperature_end": args.gumbel_temperature_end,
+        "gumbel_anneal_steps": args.gumbel_anneal_steps,
+        "final_gumbel_temperature": (
+            decoder.compressor.temperature
+            if isinstance(decoder.compressor, DiscreteMemoryCompressor)
+            else None
+        ),
+        "codebook_usage_loss_weight": args.codebook_usage_loss_weight,
         "final_training_loss": losses[-1],
         "validation_evaluations": [
             result.to_dict() for result in validation_evaluations
@@ -827,7 +930,9 @@ def main() -> None:
         extra={
             "vocabulary": list(vocabulary.id_to_token),
             "architecture": (
-                TOKEN_GATED_MULTISLOT_ARCHITECTURE
+                DISCRETE_TOKEN_GATED_ARCHITECTURE
+                if args.compressor == "discrete"
+                else TOKEN_GATED_MULTISLOT_ARCHITECTURE
                 if args.write_gate == "token_conv"
                 else (
                     GATED_MULTISLOT_ARCHITECTURE
@@ -846,6 +951,11 @@ def main() -> None:
             ),
             "memory_position_mode": args.memory_position_mode,
             "write_gate_kernel_size": args.write_gate_kernel_size,
+            "codebook_size": args.codebook_size,
+            "gumbel_temperature_start": args.gumbel_temperature_start,
+            "gumbel_temperature_end": args.gumbel_temperature_end,
+            "gumbel_anneal_steps": args.gumbel_anneal_steps,
+            "codebook_usage_loss_weight": args.codebook_usage_loss_weight,
         },
     )
     print(json.dumps(result_document, indent=2, sort_keys=True))

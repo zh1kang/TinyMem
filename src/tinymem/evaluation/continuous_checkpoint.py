@@ -7,6 +7,7 @@ import torch
 
 from tinymem.data.vocabulary import SPECIAL_TOKENS, ControlledVocabulary
 from tinymem.memory.continuous import MultiSlotAttentionMemoryCompressor
+from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.memory.recurrent_memory import GatedRecurrentMemoryBank
 from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.config import ExperimentConfig
@@ -20,6 +21,9 @@ GATED_MULTISLOT_ARCHITECTURE = (
 )
 TOKEN_GATED_MULTISLOT_ARCHITECTURE = (
     "segmented_continuous_multislot_attention_pool_token_gated_update"
+)
+DISCRETE_TOKEN_GATED_ARCHITECTURE = (
+    "segmented_discrete_gumbel_codebook_token_gated_update"
 )
 
 
@@ -67,6 +71,7 @@ def load_continuous_checkpoint(
     if architecture not in (
         GATED_MULTISLOT_ARCHITECTURE,
         TOKEN_GATED_MULTISLOT_ARCHITECTURE,
+        DISCRETE_TOKEN_GATED_ARCHITECTURE,
     ):
         raise ValueError(
             "unsupported continuous checkpoint architecture: "
@@ -99,13 +104,21 @@ def load_continuous_checkpoint(
     state = payload.get("model_state")
     if not isinstance(state, dict):
         raise ValueError("continuous checkpoint must contain model state")
-    queries = state.get("compressor.queries")
+    is_discrete = architecture == DISCRETE_TOKEN_GATED_ARCHITECTURE
+    queries = state.get(
+        "compressor.summarizer.queries"
+        if is_discrete
+        else "compressor.queries"
+    )
     if not isinstance(queries, torch.Tensor) or queries.ndim != 2:
         raise ValueError("continuous checkpoint has invalid compressor queries")
     if queries.shape[1] != config.model.d_model:
         raise ValueError("compressor query width does not match the model")
     write_gate_kernel_size = 3
-    if architecture == TOKEN_GATED_MULTISLOT_ARCHITECTURE:
+    if architecture in (
+        TOKEN_GATED_MULTISLOT_ARCHITECTURE,
+        DISCRETE_TOKEN_GATED_ARCHITECTURE,
+    ):
         pattern_weight = state.get("write_gate.patterns.weight")
         if (
             not isinstance(pattern_weight, torch.Tensor)
@@ -118,12 +131,29 @@ def load_continuous_checkpoint(
             raise ValueError("continuous checkpoint has invalid write gate patterns")
         write_gate_kernel_size = pattern_weight.shape[2]
 
-    decoder = SegmentedContinuousDecoder(
-        DecoderOnlyTransformer(config.model),
-        MultiSlotAttentionMemoryCompressor(
+    if is_discrete:
+        codebook_weight = state.get("compressor.codebook.embedding.weight")
+        if (
+            not isinstance(codebook_weight, torch.Tensor)
+            or codebook_weight.ndim != 2
+            or codebook_weight.shape[1] != config.model.d_model
+            or codebook_weight.shape[0] != config.memory.codebook_size
+        ):
+            raise ValueError("continuous checkpoint has an invalid codebook")
+        compressor = DiscreteMemoryCompressor(
+            config.model.d_model,
+            codebook_size=codebook_weight.shape[0],
+            summary_slots=queries.shape[0],
+        )
+    else:
+        compressor = MultiSlotAttentionMemoryCompressor(
             config.model.d_model,
             summary_slots=queries.shape[0],
-        ),
+        )
+
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config.model),
+        compressor,
         GatedRecurrentMemoryBank(
             capacity=config.memory.n_slots,
             model_width=config.model.d_model,
@@ -135,7 +165,11 @@ def load_continuous_checkpoint(
                 config.model.d_model,
                 kernel_size=write_gate_kernel_size,
             )
-            if architecture == TOKEN_GATED_MULTISLOT_ARCHITECTURE
+            if architecture
+            in (
+                TOKEN_GATED_MULTISLOT_ARCHITECTURE,
+                DISCRETE_TOKEN_GATED_ARCHITECTURE,
+            )
             else None
         ),
         memory_position_mode=memory_position_mode,
