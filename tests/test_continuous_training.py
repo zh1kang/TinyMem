@@ -87,6 +87,36 @@ def test_encode_update_labels_fact_correction_and_deletion_segments() -> None:
     )
 
 
+def test_distributed_qa1_labels_repeated_movements_as_corrections() -> None:
+    examples = parse_babi_lines(
+        [
+            "1 Mary moved to the kitchen.\n",
+            "2 John went to the office.\n",
+            "3 Mary travelled to the garden.\n",
+            "4 Where is Mary?\tgarden\t3\n",
+        ],
+        task_id="qa1",
+        split="validation",
+        source_name="updates.txt",
+    )
+    vocabulary = build_qa_vocabulary(examples)
+
+    encoded = encode_qa_with_distributed_facts(
+        examples[0],
+        vocabulary,
+        distractor_ids=[vocabulary.token_to_id["<unk>"]] * 24,
+        segment_length=4,
+    )
+
+    assert encoded.segment_event_types is not None
+    labels = {
+        label
+        for segment_labels in encoded.segment_event_types
+        for label in segment_labels
+    }
+    assert {"set", "correction", "background"} <= labels
+
+
 def make_decoder(vocab_size: int) -> SegmentedContinuousDecoder:
     config = ModelConfig(
         vocab_size=vocab_size,

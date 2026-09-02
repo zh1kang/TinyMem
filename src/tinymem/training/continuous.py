@@ -8,6 +8,7 @@ from torch.nn import functional as F
 from torch.optim import Optimizer
 
 from tinymem.data.schema import ReasoningExample
+from tinymem.data.symbolic_world import parse_qa1_movement
 from tinymem.data.vocabulary import ControlledVocabulary
 from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
@@ -413,12 +414,18 @@ def encode_qa_with_distributed_facts(
     separator_ids = vocabulary.encode("\n")
     input_ids = [vocabulary.token_to_id["<bos>"]]
     fact_spans = []
+    seen_people: set[str] = set()
     for gap, fact in zip(gaps[:-1], facts, strict=True):
         input_ids.extend(gap)
         input_ids.extend(separator_ids)
         start = len(input_ids)
         input_ids.extend(vocabulary.encode(fact))
-        fact_spans.append((start, len(input_ids)))
+        event_type = "relevant_fact"
+        if example.task_id == "qa1":
+            person, _ = parse_qa1_movement(fact, len(fact_spans) + 1)
+            event_type = "correction" if person in seen_people else "set"
+            seen_people.add(person)
+        fact_spans.append((start, len(input_ids), event_type))
     input_ids.extend(separator_ids)
     input_ids.extend(gaps[-1])
     input_ids.extend(vocabulary.encode(f"\n{example.question} "))
@@ -432,7 +439,7 @@ def encode_qa_with_distributed_facts(
         any(
             segment_start < fact_end
             and segment_start + segment_length > fact_start
-            for fact_start, fact_end in fact_spans
+            for fact_start, fact_end, _ in fact_spans
         )
         for segment_start in range(
             0,
@@ -440,11 +447,25 @@ def encode_qa_with_distributed_facts(
             segment_length,
         )
     )
+    event_types = []
+    for segment_start in range(
+        0,
+        segment_count * segment_length,
+        segment_length,
+    ):
+        labels = {
+            event_type
+            for fact_start, fact_end, event_type in fact_spans
+            if segment_start < fact_end
+            and segment_start + segment_length > fact_start
+        }
+        event_types.append(tuple(sorted(labels)) if labels else ("background",))
     return EncodedQAExample(
         input_ids=tuple(input_ids),
         answer_id=answer_ids[0],
         source_example_id=example.source_example_id,
         segment_write_targets=write_targets,
+        segment_event_types=tuple(event_types),
     )
 
 
