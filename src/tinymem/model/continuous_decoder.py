@@ -8,7 +8,11 @@ import torch
 from torch import nn
 
 from tinymem.memory.continuous import ContinuousMemoryCompressor
-from tinymem.memory.recurrent_memory import RecurrentMemoryBank
+from tinymem.memory.recurrent_memory import (
+    GatedRecurrentMemoryBank,
+    RecurrentMemoryBank,
+)
+from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.kv_cache import KVCache
 from tinymem.model.memory_input import AttentionMemory
 from tinymem.model.transformer import DecoderOnlyTransformer
@@ -39,6 +43,7 @@ class SegmentedContinuousDecoder(nn.Module):
         bank: RecurrentMemoryBank,
         *,
         segment_length: int,
+        write_gate: TokenSegmentWriteGate | None = None,
     ) -> None:
         super().__init__()
         if not isinstance(model, DecoderOnlyTransformer):
@@ -60,11 +65,27 @@ class SegmentedContinuousDecoder(nn.Module):
             raise ValueError("compressor width must match the model width")
         if bank.model_width != model.config.d_model:
             raise ValueError("bank width must match the model width")
+        if write_gate is not None and not isinstance(
+            write_gate,
+            TokenSegmentWriteGate,
+        ):
+            raise TypeError("write_gate must be a TokenSegmentWriteGate or None")
+        if write_gate is not None and not isinstance(
+            bank,
+            GatedRecurrentMemoryBank,
+        ):
+            raise ValueError("write_gate requires a gated recurrent memory bank")
+        if (
+            write_gate is not None
+            and write_gate.model_width != model.config.d_model
+        ):
+            raise ValueError("write gate width must match the model width")
 
         self.model = model
         self.compressor = compressor
         self.bank = bank
         self.segment_length = int(segment_length)
+        self.write_gate = write_gate
 
     def _empty_memory(
         self,
@@ -211,12 +232,26 @@ class SegmentedContinuousDecoder(nn.Module):
                 segment_valid,
                 position_offset=offset,
             ).expand(-1, summary.shape[1])
-            memory, memory_valid, write_applied, write_logits = self.bank(
-                memory,
-                memory_valid,
-                summary,
-                summary_valid,
-            )
+            if self.write_gate is None:
+                memory, memory_valid, write_applied, write_logits = self.bank(
+                    memory,
+                    memory_valid,
+                    summary,
+                    summary_valid,
+                )
+            else:
+                external_write_logits = self.write_gate(
+                    self.model.token_embedding(segment_ids),
+                    segment_valid,
+                )
+                assert isinstance(self.bank, GatedRecurrentMemoryBank)
+                memory, memory_valid, write_applied, write_logits = self.bank(
+                    memory,
+                    memory_valid,
+                    summary,
+                    summary_valid,
+                    external_write_logits=external_write_logits,
+                )
             memory_positions = self._update_positions(
                 memory_positions,
                 summary_positions,

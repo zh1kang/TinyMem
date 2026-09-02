@@ -195,6 +195,42 @@ def test_gated_bank_write_score_receives_a_straight_through_gradient() -> None:
     assert torch.count_nonzero(bank.write_score.weight.grad) > 0
 
 
+def test_gated_bank_uses_an_external_write_logit_and_threshold() -> None:
+    bank = GatedRecurrentMemoryBank(
+        capacity=2,
+        model_width=1,
+        write_threshold=0.8,
+    )
+    memory = torch.tensor([[[1.0], [2.0]], [[10.0], [20.0]]])
+    memory_valid = torch.ones(2, 2, dtype=torch.bool)
+    summary = torch.tensor([[[3.0]], [[30.0]]])
+    summary_valid = torch.ones(2, 1, dtype=torch.bool)
+    external_logits = torch.tensor([[2.0], [1.0]])
+
+    next_memory, _, writes, logits = bank(
+        memory,
+        memory_valid,
+        summary,
+        summary_valid,
+        external_write_logits=external_logits,
+    )
+
+    assert torch.equal(writes, torch.tensor([[True], [False]]))
+    assert torch.equal(next_memory[0], torch.tensor([[2.0], [3.0]]))
+    assert torch.equal(next_memory[1], memory[1])
+    assert torch.equal(logits, external_logits)
+
+
+@pytest.mark.parametrize("threshold", [True, 0.0, -0.1, 1.1, "0.5"])
+def test_gated_bank_rejects_invalid_write_threshold(threshold: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        GatedRecurrentMemoryBank(
+            capacity=2,
+            model_width=1,
+            write_threshold=threshold,  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize(
     ("arguments", "error"),
     [

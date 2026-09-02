@@ -11,9 +11,11 @@ from tinymem.memory.recurrent_memory import (
     GatedRecurrentMemoryBank,
     RecurrentMemoryBank,
 )
+from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.config import ModelConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.kv_cache import KVCache
+from tinymem.model.memory_input import AttentionMemory
 from tinymem.model.transformer import DecoderOnlyTransformer
 
 
@@ -130,6 +132,41 @@ def test_segmented_decoder_exposes_gated_write_logits() -> None:
     assert output.writes_applied.shape == (1, 2)
     assert output.write_logits is not None
     assert output.write_logits.shape == (1, 2)
+
+
+def test_token_write_gate_is_independent_of_memory_interventions() -> None:
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MultiSlotAttentionMemoryCompressor(8, summary_slots=1),
+        GatedRecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+        write_gate=TokenSegmentWriteGate(8),
+    )
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    token_valid = torch.ones(1, 4, dtype=torch.bool)
+
+    normal = decoder(input_ids, token_valid)
+    zeroed = decoder(
+        input_ids,
+        token_valid,
+        memory_intervention=lambda memory: AttentionMemory(
+            values=torch.zeros_like(memory.values),
+            valid=memory.valid,
+            positions=memory.positions,
+        ),
+    )
+
+    assert normal.write_logits is not None
+    assert zeroed.write_logits is not None
+    torch.testing.assert_close(normal.write_logits, zeroed.write_logits)
 
 
 def test_first_segment_logits_use_only_initial_empty_memory() -> None:

@@ -138,11 +138,29 @@ class RecurrentMemoryBank(nn.Module):
 class GatedRecurrentMemoryBank(RecurrentMemoryBank):
     """Learn when a candidate group should replace the oldest memory slots."""
 
-    def __init__(self, *, capacity: int, model_width: int) -> None:
+    def __init__(
+        self,
+        *,
+        capacity: int,
+        model_width: int,
+        write_threshold: float = 0.5,
+    ) -> None:
         super().__init__(capacity=capacity, model_width=model_width)
         self.write_score = nn.Linear(self.model_width, 1)
         nn.init.zeros_(self.write_score.weight)
         nn.init.ones_(self.write_score.bias)
+        self.set_write_threshold(write_threshold)
+
+    def set_write_threshold(self, threshold: float) -> None:
+        """Set the probability needed to apply a hard write."""
+        if isinstance(threshold, bool) or not isinstance(
+            threshold,
+            (int, float),
+        ):
+            raise TypeError("write threshold must be a real number")
+        if not 0 < threshold <= 1:
+            raise ValueError("write threshold must be in (0, 1]")
+        self.write_threshold = float(threshold)
 
     def forward(
         self,
@@ -150,6 +168,8 @@ class GatedRecurrentMemoryBank(RecurrentMemoryBank):
         memory_valid: torch.Tensor,
         summary: torch.Tensor,
         summary_valid: torch.Tensor,
+        *,
+        external_write_logits: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Apply a straight-through learned write decision per batch row."""
         shifted_memory, shifted_valid, row_valid, _ = super().forward(
@@ -158,10 +178,23 @@ class GatedRecurrentMemoryBank(RecurrentMemoryBank):
             summary,
             summary_valid,
         )
-        candidate = F.normalize(summary.mean(dim=1), dim=-1)
-        write_logits = self.write_score(candidate)
+        if external_write_logits is None:
+            candidate = F.normalize(summary.mean(dim=1), dim=-1)
+            write_logits = self.write_score(candidate)
+        else:
+            if external_write_logits.shape != row_valid.shape:
+                raise ValueError(
+                    f"external write logits must have shape {row_valid.shape}"
+                )
+            if not external_write_logits.is_floating_point():
+                raise TypeError("external write logits must be floating point")
+            if external_write_logits.device != memory.device:
+                raise ValueError("external write logits and memory must share a device")
+            if external_write_logits.dtype != memory.dtype:
+                raise TypeError("external write logits and memory must share a dtype")
+            write_logits = external_write_logits
         write_probability = torch.sigmoid(write_logits)
-        hard_write = (write_probability >= 0.5) & row_valid
+        hard_write = (write_probability >= self.write_threshold) & row_valid
         straight_through_write = (
             hard_write.to(dtype=write_probability.dtype)
             + write_probability
