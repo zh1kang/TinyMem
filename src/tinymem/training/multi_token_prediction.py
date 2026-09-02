@@ -79,9 +79,11 @@ def multi_token_cross_entropy(
         )
         if invalid.any():
             raise ValueError("valid target IDs must be in the vocabulary")
+        masked_targets = aligned_targets.masked_fill(~aligned_valid, -100)
         losses[horizon] = F.cross_entropy(
-            logits[:, :-horizon, :][aligned_valid],
-            aligned_targets[aligned_valid],
+            logits[:, :-horizon, :].reshape(-1, vocabulary_size),
+            masked_targets.reshape(-1),
+            ignore_index=-100,
         )
 
     return MultiTokenLoss(
