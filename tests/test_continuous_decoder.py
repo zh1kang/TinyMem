@@ -25,6 +25,7 @@ def make_decoder(
     capacity: int = 2,
     vocab_size: int = 16,
     compressor_type: type[ContinuousMemoryCompressor] = MeanPoolMemoryCompressor,
+    memory_position_mode: str = "absolute",
 ) -> SegmentedContinuousDecoder:
     config = ModelConfig(
         vocab_size=vocab_size,
@@ -46,6 +47,7 @@ def make_decoder(
         compressor,
         bank,
         segment_length=segment_length,
+        memory_position_mode=memory_position_mode,
     )
 
 
@@ -62,6 +64,30 @@ def test_segmented_decoder_returns_logits_and_fixed_memory() -> None:
     assert output.memory_positions.shape == (1, 2)
     assert torch.equal(output.memory_valid, torch.tensor([[True, True]]))
     assert torch.equal(output.memory_positions, torch.tensor([[1, 3]]))
+
+
+def test_virtual_memory_positions_form_a_bounded_prefix() -> None:
+    decoder = make_decoder(
+        capacity=4,
+        memory_position_mode="virtual",
+    )
+    memory_positions = torch.tensor(
+        [[-1, -1, 7, 15], [1, 5, 9, 13]]
+    )
+    memory_valid = torch.tensor(
+        [[False, False, True, True], [True, True, True, True]]
+    )
+
+    positions = decoder._attention_memory_positions(
+        memory_positions,
+        memory_valid,
+        position_offset=64,
+    )
+
+    assert torch.equal(
+        positions,
+        torch.tensor([[-1, -1, 62, 63], [60, 61, 62, 63]]),
+    )
 
 
 def test_segmented_decoder_accepts_attention_pooling() -> None:
@@ -318,3 +344,11 @@ def test_segmented_decoder_rejects_invalid_segment_length(
 
     with pytest.raises(error):
         make_decoder(segment_length=segment_length)
+
+
+@pytest.mark.parametrize("mode", [None, "relative", 1])
+def test_segmented_decoder_rejects_invalid_memory_position_mode(
+    mode: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        make_decoder(memory_position_mode=mode)  # type: ignore[arg-type]

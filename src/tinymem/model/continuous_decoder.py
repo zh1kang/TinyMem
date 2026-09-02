@@ -19,6 +19,7 @@ from tinymem.model.transformer import DecoderOnlyTransformer
 
 
 MemoryIntervention = Callable[[AttentionMemory], AttentionMemory]
+MEMORY_POSITION_MODES = frozenset(("absolute", "virtual"))
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class SegmentedContinuousDecoder(nn.Module):
         *,
         segment_length: int,
         write_gate: TokenSegmentWriteGate | None = None,
+        memory_position_mode: str = "absolute",
     ) -> None:
         super().__init__()
         if not isinstance(model, DecoderOnlyTransformer):
@@ -80,12 +82,19 @@ class SegmentedContinuousDecoder(nn.Module):
             and write_gate.model_width != model.config.d_model
         ):
             raise ValueError("write gate width must match the model width")
+        if not isinstance(memory_position_mode, str):
+            raise TypeError("memory_position_mode must be a string")
+        if memory_position_mode not in MEMORY_POSITION_MODES:
+            raise ValueError(
+                "memory_position_mode must be 'absolute' or 'virtual'"
+            )
 
         self.model = model
         self.compressor = compressor
         self.bank = bank
         self.segment_length = int(segment_length)
         self.write_gate = write_gate
+        self.memory_position_mode = memory_position_mode
 
     def _empty_memory(
         self,
@@ -152,6 +161,20 @@ class SegmentedContinuousDecoder(nn.Module):
             memory_positions,
         )
 
+    def _attention_memory_positions(
+        self,
+        memory_positions: torch.Tensor,
+        memory_valid: torch.Tensor,
+        *,
+        position_offset: int,
+    ) -> torch.Tensor:
+        if self.memory_position_mode == "absolute":
+            return memory_positions
+        ranks = memory_valid.cumsum(dim=1)
+        valid_count = memory_valid.sum(dim=1, keepdim=True)
+        virtual_positions = position_offset - valid_count + ranks - 1
+        return virtual_positions.clamp_min(0).masked_fill(~memory_valid, -1)
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -201,7 +224,11 @@ class SegmentedContinuousDecoder(nn.Module):
             attention_memory = AttentionMemory(
                 values=memory,
                 valid=memory_valid,
-                positions=memory_positions,
+                positions=self._attention_memory_positions(
+                    memory_positions,
+                    memory_valid,
+                    position_offset=offset,
+                ),
             )
             if memory_intervention is not None:
                 attention_memory = memory_intervention(attention_memory)

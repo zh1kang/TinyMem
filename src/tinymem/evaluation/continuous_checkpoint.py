@@ -82,6 +82,11 @@ def load_continuous_checkpoint(
     vocabulary = ControlledVocabulary(tokens[len(SPECIAL_TOKENS) :])
     if vocabulary.id_to_token != tuple(tokens):
         raise ValueError("continuous checkpoint vocabulary is not in standard order")
+    memory_position_mode = extra.get("memory_position_mode", "absolute")
+    if memory_position_mode not in ("absolute", "virtual"):
+        raise ValueError(
+            "continuous checkpoint has an invalid memory position mode"
+        )
     write_threshold = extra.get("write_threshold", 0.5)
     if isinstance(write_threshold, bool) or not isinstance(
         write_threshold,
@@ -117,6 +122,7 @@ def load_continuous_checkpoint(
             if architecture == TOKEN_GATED_MULTISLOT_ARCHITECTURE
             else None
         ),
+        memory_position_mode=memory_position_mode,
     )
     decoder.load_state_dict(state)
     decoder.to(device)

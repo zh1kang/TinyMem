@@ -27,6 +27,7 @@ def write_checkpoint(
     *,
     architecture: str,
     write_threshold: float | None = None,
+    memory_position_mode: str = "absolute",
 ) -> ExperimentConfig:
     vocabulary = ControlledVocabulary([" ", "Mary", "kitchen"])
     config = ExperimentConfig(
@@ -62,6 +63,7 @@ def write_checkpoint(
             if architecture == TOKEN_GATED_MULTISLOT_ARCHITECTURE
             else None
         ),
+        memory_position_mode=memory_position_mode,
     )
     extra: dict[str, object] = {
         "architecture": architecture,
@@ -69,6 +71,8 @@ def write_checkpoint(
     }
     if write_threshold is not None:
         extra["write_threshold"] = write_threshold
+    if memory_position_mode != "absolute":
+        extra["memory_position_mode"] = memory_position_mode
     save_checkpoint(
         path,
         model=decoder,
@@ -97,6 +101,7 @@ def test_load_continuous_checkpoint_reconstructs_trained_architecture(
     assert loaded.decoder.bank.capacity == 4
     assert loaded.decoder.bank.write_threshold == 0.5
     assert loaded.decoder.write_gate is None
+    assert loaded.decoder.memory_position_mode == "absolute"
 
 
 def test_load_continuous_checkpoint_reconstructs_token_gate_and_threshold(
@@ -107,12 +112,14 @@ def test_load_continuous_checkpoint_reconstructs_token_gate_and_threshold(
         path,
         architecture=TOKEN_GATED_MULTISLOT_ARCHITECTURE,
         write_threshold=0.81,
+        memory_position_mode="virtual",
     )
 
     loaded = load_continuous_checkpoint(path, device="cpu")
 
     assert isinstance(loaded.decoder.write_gate, TokenSegmentWriteGate)
     assert loaded.decoder.bank.write_threshold == 0.81
+    assert loaded.decoder.memory_position_mode == "virtual"
 
 
 def test_load_continuous_checkpoint_rejects_unknown_architecture(

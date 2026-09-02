@@ -83,6 +83,11 @@ def parse_args() -> argparse.Namespace:
         default="summary",
     )
     parser.add_argument(
+        "--memory-position-mode",
+        choices=("absolute", "virtual"),
+        default="absolute",
+    )
+    parser.add_argument(
         "--max-training-distractor-tokens",
         type=int,
         default=0,
@@ -281,6 +286,7 @@ def main() -> None:
             if args.write_gate == "token_conv"
             else None
         ),
+        memory_position_mode=args.memory_position_mode,
     ).to(device)
     optimizer = torch.optim.AdamW(
         decoder.parameters(),
@@ -747,6 +753,7 @@ def main() -> None:
         "compressor": args.compressor,
         "memory_update": args.memory_update,
         "write_gate": args.write_gate,
+        "memory_position_mode": args.memory_position_mode,
         "max_training_distractor_tokens": (
             args.max_training_distractor_tokens
         ),
@@ -838,6 +845,7 @@ def main() -> None:
                 if isinstance(decoder.bank, GatedRecurrentMemoryBank)
                 else None
             ),
+            "memory_position_mode": args.memory_position_mode,
         },
     )
     print(json.dumps(result_document, indent=2, sort_keys=True))
