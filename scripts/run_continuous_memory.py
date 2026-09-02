@@ -82,6 +82,7 @@ def parse_args() -> argparse.Namespace:
         choices=("summary", "token_conv"),
         default="summary",
     )
+    parser.add_argument("--write-gate-kernel-size", type=int, default=3)
     parser.add_argument(
         "--memory-position-mode",
         choices=("absolute", "virtual"),
@@ -227,6 +228,11 @@ def main() -> None:
         raise ValueError("token convolution write gate requires gated memory updates")
     if args.write_gate == "token_conv" and args.compressor != "multislot_attention":
         raise ValueError("token convolution write gate requires multislot attention")
+    if (
+        args.write_gate_kernel_size <= 0
+        or args.write_gate_kernel_size % 2 == 0
+    ):
+        raise ValueError("write gate kernel size must be a positive odd integer")
     if args.write_calibration_max_fpr is not None:
         if not 0 <= args.write_calibration_max_fpr < 1:
             raise ValueError("write calibration maximum FPR must be in [0, 1)")
@@ -282,7 +288,10 @@ def main() -> None:
         ),
         segment_length=args.segment_length,
         write_gate=(
-            TokenSegmentWriteGate(model.config.d_model)
+            TokenSegmentWriteGate(
+                model.config.d_model,
+                kernel_size=args.write_gate_kernel_size,
+            )
             if args.write_gate == "token_conv"
             else None
         ),
@@ -741,6 +750,7 @@ def main() -> None:
         "compressor": args.compressor,
         "memory_update": args.memory_update,
         "write_gate": args.write_gate,
+        "write_gate_kernel_size": args.write_gate_kernel_size,
         "memory_position_mode": args.memory_position_mode,
         "max_training_distractor_tokens": (
             args.max_training_distractor_tokens
@@ -834,6 +844,7 @@ def main() -> None:
                 else None
             ),
             "memory_position_mode": args.memory_position_mode,
+            "write_gate_kernel_size": args.write_gate_kernel_size,
         },
     )
     print(json.dumps(result_document, indent=2, sort_keys=True))

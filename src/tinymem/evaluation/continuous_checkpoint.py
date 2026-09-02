@@ -104,6 +104,19 @@ def load_continuous_checkpoint(
         raise ValueError("continuous checkpoint has invalid compressor queries")
     if queries.shape[1] != config.model.d_model:
         raise ValueError("compressor query width does not match the model")
+    write_gate_kernel_size = 3
+    if architecture == TOKEN_GATED_MULTISLOT_ARCHITECTURE:
+        pattern_weight = state.get("write_gate.patterns.weight")
+        if (
+            not isinstance(pattern_weight, torch.Tensor)
+            or pattern_weight.ndim != 3
+            or pattern_weight.shape[:2]
+            != (config.model.d_model, config.model.d_model)
+            or pattern_weight.shape[2] <= 0
+            or pattern_weight.shape[2] % 2 == 0
+        ):
+            raise ValueError("continuous checkpoint has invalid write gate patterns")
+        write_gate_kernel_size = pattern_weight.shape[2]
 
     decoder = SegmentedContinuousDecoder(
         DecoderOnlyTransformer(config.model),
@@ -118,7 +131,10 @@ def load_continuous_checkpoint(
         ),
         segment_length=config.stream.segment_length,
         write_gate=(
-            TokenSegmentWriteGate(config.model.d_model)
+            TokenSegmentWriteGate(
+                config.model.d_model,
+                kernel_size=write_gate_kernel_size,
+            )
             if architecture == TOKEN_GATED_MULTISLOT_ARCHITECTURE
             else None
         ),

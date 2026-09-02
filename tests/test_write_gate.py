@@ -35,9 +35,10 @@ def test_token_write_gate_ignores_invalid_embedding_values() -> None:
     torch.testing.assert_close(actual, expected)
 
 
-def test_linear_pattern_features_match_width_three_convolution() -> None:
+@pytest.mark.parametrize("kernel_size", [3, 11])
+def test_linear_pattern_features_match_convolution(kernel_size: int) -> None:
     torch.manual_seed(41)
-    gate = TokenSegmentWriteGate(4)
+    gate = TokenSegmentWriteGate(4, kernel_size=kernel_size)
     embeddings = torch.randn(2, 5, 4)
 
     expected = gate.patterns(embeddings.transpose(1, 2)).transpose(1, 2)
@@ -62,3 +63,11 @@ def test_token_write_gate_handles_an_all_invalid_row() -> None:
 def test_token_write_gate_rejects_invalid_width(model_width: object) -> None:
     with pytest.raises((TypeError, ValueError)):
         TokenSegmentWriteGate(model_width)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("kernel_size", [True, 0, -1, 2, 2.5, "3"])
+def test_token_write_gate_rejects_invalid_kernel_size(
+    kernel_size: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        TokenSegmentWriteGate(4, kernel_size=kernel_size)  # type: ignore[arg-type]

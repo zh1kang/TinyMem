@@ -10,18 +10,23 @@ from torch.nn import functional as F
 class TokenSegmentWriteGate(nn.Module):
     """Detect locally relevant token patterns without reading memory state."""
 
-    def __init__(self, model_width: int) -> None:
+    def __init__(self, model_width: int, *, kernel_size: int = 3) -> None:
         super().__init__()
         if isinstance(model_width, bool) or not isinstance(model_width, Integral):
             raise TypeError("model_width must be an integer")
         if model_width <= 0:
             raise ValueError("model_width must be positive")
+        if isinstance(kernel_size, bool) or not isinstance(kernel_size, Integral):
+            raise TypeError("kernel_size must be an integer")
+        if kernel_size <= 0 or kernel_size % 2 == 0:
+            raise ValueError("kernel_size must be a positive odd integer")
         self.model_width = int(model_width)
+        self.kernel_size = int(kernel_size)
         self.patterns = nn.Conv1d(
             self.model_width,
             self.model_width,
-            kernel_size=3,
-            padding=1,
+            kernel_size=self.kernel_size,
+            padding=self.kernel_size // 2,
         )
         self.score = nn.Linear(self.model_width, 1)
         nn.init.zeros_(self.score.weight)
@@ -31,15 +36,20 @@ class TokenSegmentWriteGate(nn.Module):
         self,
         token_embeddings: torch.Tensor,
     ) -> torch.Tensor:
-        padded = F.pad(token_embeddings, (0, 0, 1, 1))
+        radius = self.kernel_size // 2
+        padded = F.pad(token_embeddings, (0, 0, radius, radius))
         token_count = token_embeddings.shape[1]
         weight = self.patterns.weight
         bias = self.patterns.bias
-        return (
-            F.linear(padded[:, :token_count], weight[:, :, 0], bias)
-            + F.linear(padded[:, 1 : token_count + 1], weight[:, :, 1])
-            + F.linear(padded[:, 2 : token_count + 2], weight[:, :, 2])
-        )
+        taps = [
+            F.linear(
+                padded[:, index : index + token_count],
+                weight[:, :, index],
+                bias if index == 0 else None,
+            )
+            for index in range(self.kernel_size)
+        ]
+        return torch.stack(taps).sum(dim=0)
 
     def forward(
         self,
