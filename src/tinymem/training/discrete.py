@@ -40,36 +40,36 @@ class GumbelTemperatureSchedule:
 
 
 def codebook_usage_loss(
-    probabilities: torch.Tensor,
+    assignments: torch.Tensor,
     valid: torch.Tensor,
 ) -> torch.Tensor:
     """Return negative aggregate entropy to discourage codebook collapse."""
-    if not isinstance(probabilities, torch.Tensor):
-        raise TypeError("probabilities must be a torch.Tensor")
+    if not isinstance(assignments, torch.Tensor):
+        raise TypeError("assignments must be a torch.Tensor")
     if not isinstance(valid, torch.Tensor):
         raise TypeError("valid must be a torch.Tensor")
-    if probabilities.ndim != 3:
+    if assignments.ndim != 3:
         raise ValueError(
-            "probabilities must have shape [batch, assignments, codebook_size]"
+            "assignments must have shape [batch, assignments, codebook_size]"
         )
-    if probabilities.shape[0] == 0 or probabilities.shape[1] == 0:
-        raise ValueError("probabilities must contain rows and assignments")
-    if probabilities.shape[2] <= 1:
-        raise ValueError("probabilities must contain more than one code")
-    if not probabilities.is_floating_point():
-        raise TypeError("probabilities must be floating point")
-    if valid.shape != probabilities.shape[:2]:
-        raise ValueError(f"valid must have shape {probabilities.shape[:2]}")
+    if assignments.shape[0] == 0 or assignments.shape[1] == 0:
+        raise ValueError("assignments must contain rows and assignments")
+    if assignments.shape[2] <= 1:
+        raise ValueError("assignments must contain more than one code")
+    if not assignments.is_floating_point():
+        raise TypeError("assignments must be floating point")
+    if valid.shape != assignments.shape[:2]:
+        raise ValueError(f"valid must have shape {assignments.shape[:2]}")
     if valid.dtype != torch.bool:
         raise TypeError("valid must be a boolean tensor")
-    if valid.device != probabilities.device:
-        raise ValueError("valid and probabilities must share a device")
+    if valid.device != assignments.device:
+        raise ValueError("valid and assignments must share a device")
     if not valid.any():
         raise ValueError("usage loss requires a valid assignment")
 
-    expanded_valid = valid.unsqueeze(-1).to(dtype=probabilities.dtype)
+    expanded_valid = valid.unsqueeze(-1).to(dtype=assignments.dtype)
     mean_probability = (
-        probabilities * expanded_valid
+        assignments * expanded_valid
     ).sum(dim=(0, 1)) / expanded_valid.sum()
     tiny = torch.finfo(mean_probability.dtype).tiny
     return (

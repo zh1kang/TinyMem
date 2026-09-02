@@ -482,14 +482,14 @@ def train_continuous_answer_supervision(
         loss = next_token_cross_entropy(output.logits, target_ids)
         if codebook_usage_loss_weight > 0:
             if (
-                output.code_probabilities is None
+                output.code_assignments is None
                 or output.proposed_code_valid is None
             ):
                 raise ValueError(
                     "codebook usage loss requires discrete code traces"
                 )
             loss = loss + codebook_usage_loss_weight * codebook_usage_loss(
-                output.code_probabilities,
+                output.code_assignments,
                 output.proposed_code_valid,
             )
         if write_loss_weight > 0:

@@ -68,6 +68,7 @@ def test_segmented_decoder_returns_logits_and_fixed_memory() -> None:
     assert output.memory_codes is None
     assert output.proposed_code_indices is None
     assert output.code_probabilities is None
+    assert output.code_assignments is None
     assert output.proposed_code_valid is None
     assert output.prequantized_codes is None
 
@@ -110,6 +111,8 @@ def test_segmented_decoder_stores_discrete_codes_at_evaluation() -> None:
     assert output.proposed_code_indices.shape == (1, 2)
     assert output.code_probabilities is not None
     assert output.code_probabilities.shape == (1, 2, 6)
+    assert output.code_assignments is not None
+    assert output.code_assignments.shape == (1, 2, 6)
     assert output.proposed_code_valid is not None
     assert output.proposed_code_valid.all()
     assert output.prequantized_codes is not None

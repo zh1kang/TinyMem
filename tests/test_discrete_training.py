@@ -36,18 +36,18 @@ def test_usage_loss_rewards_balanced_aggregate_assignments() -> None:
 
 
 def test_usage_loss_ignores_invalid_assignments_and_gradients() -> None:
-    probabilities = torch.tensor(
+    assignments = torch.tensor(
         [[[0.75, 0.25], [0.1, 0.9]]],
         requires_grad=True,
     )
     valid = torch.tensor([[True, False]])
 
-    loss = codebook_usage_loss(probabilities, valid)
+    loss = codebook_usage_loss(assignments, valid)
     loss.backward()
 
-    assert probabilities.grad is not None
-    assert torch.count_nonzero(probabilities.grad[0, 0]) > 0
-    assert torch.equal(probabilities.grad[0, 1], torch.zeros(2))
+    assert assignments.grad is not None
+    assert torch.count_nonzero(assignments.grad[0, 0]) > 0
+    assert torch.equal(assignments.grad[0, 1], torch.zeros(2))
 
 
 @pytest.mark.parametrize(

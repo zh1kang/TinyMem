@@ -36,6 +36,7 @@ class SegmentedContinuousOutput:
     memory_codes: torch.Tensor | None
     proposed_code_indices: torch.Tensor | None
     code_probabilities: torch.Tensor | None
+    code_assignments: torch.Tensor | None
     proposed_code_valid: torch.Tensor | None
     prequantized_codes: torch.Tensor | None
 
@@ -286,6 +287,7 @@ class SegmentedContinuousDecoder(nn.Module):
         )
         proposed_code_indices = []
         code_probabilities = []
+        code_assignments = []
         proposed_code_valid = []
         prequantized_codes = []
         for offset in range(0, input_ids.shape[1], self.segment_length):
@@ -387,6 +389,7 @@ class SegmentedContinuousDecoder(nn.Module):
                     memory = memory * memory_valid.unsqueeze(-1)
                 proposed_code_indices.append(discrete_output.indices)
                 code_probabilities.append(discrete_output.probabilities)
+                code_assignments.append(discrete_output.assignments)
                 proposed_code_valid.append(discrete_output.valid)
                 prequantized_codes.append(discrete_output.prequantized)
             memory_positions = self._update_positions(
@@ -418,6 +421,11 @@ class SegmentedContinuousDecoder(nn.Module):
             code_probabilities=(
                 torch.cat(code_probabilities, dim=1)
                 if code_probabilities
+                else None
+            ),
+            code_assignments=(
+                torch.cat(code_assignments, dim=1)
+                if code_assignments
                 else None
             ),
             proposed_code_valid=(
