@@ -9,11 +9,16 @@ from torch.optim import Optimizer
 
 from tinymem.data.schema import ReasoningExample
 from tinymem.data.vocabulary import ControlledVocabulary
+from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.training.controlled_qa import (
     EncodedQAExample,
     collate_answer_supervision,
     format_qa_prompt,
+)
+from tinymem.training.discrete import (
+    GumbelTemperatureSchedule,
+    codebook_usage_loss,
 )
 from tinymem.training.losses import next_token_cross_entropy
 
@@ -377,6 +382,9 @@ def train_continuous_answer_supervision(
     device: torch.device | str,
     seed: int,
     write_loss_weight: float = 0.0,
+    codebook_usage_loss_weight: float = 0.0,
+    temperature_schedule: GumbelTemperatureSchedule | None = None,
+    temperature_step_offset: int = 0,
 ) -> list[float]:
     """Train a segmented decoder and return one finite loss per step."""
     if not isinstance(decoder, SegmentedContinuousDecoder):
@@ -408,6 +416,36 @@ def train_continuous_answer_supervision(
         raise TypeError("write_loss_weight must be a real number")
     if write_loss_weight < 0:
         raise ValueError("write_loss_weight must be nonnegative")
+    if isinstance(codebook_usage_loss_weight, bool) or not isinstance(
+        codebook_usage_loss_weight,
+        Real,
+    ):
+        raise TypeError("codebook_usage_loss_weight must be a real number")
+    if codebook_usage_loss_weight < 0:
+        raise ValueError("codebook_usage_loss_weight must be nonnegative")
+    if temperature_schedule is not None and not isinstance(
+        temperature_schedule,
+        GumbelTemperatureSchedule,
+    ):
+        raise TypeError(
+            "temperature_schedule must be a GumbelTemperatureSchedule or None"
+        )
+    if isinstance(temperature_step_offset, bool) or not isinstance(
+        temperature_step_offset,
+        int,
+    ):
+        raise TypeError("temperature_step_offset must be an integer")
+    if temperature_step_offset < 0:
+        raise ValueError("temperature_step_offset must be nonnegative")
+    discrete_compressor = (
+        decoder.compressor
+        if isinstance(decoder.compressor, DiscreteMemoryCompressor)
+        else None
+    )
+    if codebook_usage_loss_weight > 0 and discrete_compressor is None:
+        raise ValueError("codebook usage loss requires a discrete compressor")
+    if temperature_schedule is not None and discrete_compressor is None:
+        raise ValueError("temperature scheduling requires a discrete compressor")
     if not examples:
         raise ValueError("examples must be nonempty")
     if not all(isinstance(example, EncodedQAExample) for example in examples):
@@ -422,7 +460,12 @@ def train_continuous_answer_supervision(
     generator = torch.Generator().manual_seed(seed)
     losses = []
     decoder.train()
-    for _ in range(steps):
+    for step in range(steps):
+        if temperature_schedule is not None:
+            assert discrete_compressor is not None
+            discrete_compressor.set_temperature(
+                temperature_schedule.value(temperature_step_offset + step)
+            )
         indices = torch.randint(
             len(examples),
             (batch_size,),
@@ -437,6 +480,18 @@ def train_continuous_answer_supervision(
         optimizer.zero_grad(set_to_none=True)
         output = decoder(input_ids, token_valid)
         loss = next_token_cross_entropy(output.logits, target_ids)
+        if codebook_usage_loss_weight > 0:
+            if (
+                output.code_probabilities is None
+                or output.proposed_code_valid is None
+            ):
+                raise ValueError(
+                    "codebook usage loss requires discrete code traces"
+                )
+            loss = loss + codebook_usage_loss_weight * codebook_usage_loss(
+                output.code_probabilities,
+                output.proposed_code_valid,
+            )
         if write_loss_weight > 0:
             if output.write_logits is None:
                 raise ValueError("positive write loss requires a gated memory bank")
