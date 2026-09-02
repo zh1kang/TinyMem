@@ -11,8 +11,10 @@ from torch.optim import Optimizer
 
 from tinymem.data.schema import ReasoningExample
 from tinymem.data.vocabulary import ControlledVocabulary
+from tinymem.model.multi_token_prediction import MultiTokenPredictionHeads
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.losses import next_token_cross_entropy
+from tinymem.training.multi_token_prediction import multi_token_cross_entropy
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,8 @@ def train_answer_supervision(
     pad_id: int,
     device: torch.device | str,
     seed: int,
+    mtp_heads: MultiTokenPredictionHeads | None = None,
+    mtp_loss_weight: float = 0.0,
 ) -> list[float]:
     """Train a controlled model and return one loss value per step."""
     if not isinstance(model, DecoderOnlyTransformer):
@@ -157,6 +161,25 @@ def train_answer_supervision(
         raise TypeError("gradient_clip_norm must be a real number")
     if gradient_clip_norm <= 0:
         raise ValueError("gradient_clip_norm must be positive")
+    if mtp_heads is not None and not isinstance(
+        mtp_heads,
+        MultiTokenPredictionHeads,
+    ):
+        raise TypeError("mtp_heads must be MultiTokenPredictionHeads or None")
+    if isinstance(mtp_loss_weight, bool) or not isinstance(
+        mtp_loss_weight,
+        Real,
+    ):
+        raise TypeError("mtp_loss_weight must be a real number")
+    if mtp_loss_weight < 0:
+        raise ValueError("mtp_loss_weight must be nonnegative")
+    if mtp_loss_weight > 0 and mtp_heads is None:
+        raise ValueError("positive MTP loss requires MTP heads")
+    if mtp_heads is not None and (
+        mtp_heads.model_width != model.config.d_model
+        or mtp_heads.vocab_size != model.config.vocab_size
+    ):
+        raise ValueError("MTP heads must match the model width and vocabulary")
     if not examples:
         raise ValueError("examples must be nonempty")
 
@@ -176,10 +199,24 @@ def train_answer_supervision(
             device=device,
         )
         optimizer.zero_grad(set_to_none=True)
-        logits = model(input_ids)
+        hidden_states = model.forward_hidden(input_ids)
+        logits = model.lm_head(hidden_states)
         loss = next_token_cross_entropy(logits, target_ids)
+        if mtp_loss_weight > 0:
+            assert mtp_heads is not None
+            token_valid = torch.zeros_like(input_ids, dtype=torch.bool)
+            for row, example in enumerate(batch):
+                token_valid[row, : len(example.input_ids)] = True
+            loss = loss + mtp_loss_weight * multi_token_cross_entropy(
+                mtp_heads(hidden_states),
+                input_ids,
+                token_valid,
+            ).total
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
+        parameters = list(model.parameters())
+        if mtp_heads is not None:
+            parameters.extend(mtp_heads.parameters())
+        torch.nn.utils.clip_grad_norm_(parameters, gradient_clip_norm)
         optimizer.step()
         losses.append(float(loss.detach().cpu()))
     return losses
