@@ -276,6 +276,7 @@ class SegmentedContinuousDecoder(nn.Module):
         token_valid: torch.Tensor,
         *,
         memory_intervention: MemoryIntervention | None = None,
+        forced_writes: torch.Tensor | None = None,
     ) -> SegmentedContinuousOutput:
         """Return logits and final memory without breaking the autograd graph."""
         if not isinstance(input_ids, torch.Tensor):
@@ -298,6 +299,25 @@ class SegmentedContinuousDecoder(nn.Module):
             raise ValueError("input_ids and decoder must share a device")
         if memory_intervention is not None and not callable(memory_intervention):
             raise TypeError("memory_intervention must be callable or None")
+        if forced_writes is not None:
+            if not isinstance(forced_writes, torch.Tensor):
+                raise TypeError("forced_writes must be a torch.Tensor or None")
+            segment_count = (
+                input_ids.shape[1] + self.segment_length - 1
+            ) // self.segment_length
+            expected_write_shape = (input_ids.shape[0], segment_count)
+            if forced_writes.shape != expected_write_shape:
+                raise ValueError(
+                    f"forced_writes must have shape {expected_write_shape}"
+                )
+            if forced_writes.dtype != torch.bool:
+                raise TypeError("forced_writes must be a boolean tensor")
+            if forced_writes.device != input_ids.device:
+                raise ValueError("forced_writes and input_ids must share a device")
+            if self.training:
+                raise ValueError("forced_writes are available only during evaluation")
+            if self.write_gate is None and self.write_controller is None:
+                raise ValueError("forced_writes require an external write decider")
         if (
             token_valid.shape[1] > 1
             and (token_valid[:, 1:] & ~token_valid[:, :-1]).any()
@@ -429,6 +449,12 @@ class SegmentedContinuousDecoder(nn.Module):
                     self.model.token_embedding(segment_ids).detach(),
                     segment_valid,
                 )
+            if forced_writes is not None:
+                segment_index = offset // self.segment_length
+                external_write_strength = forced_writes[
+                    :,
+                    segment_index : segment_index + 1,
+                ].to(dtype=memory.dtype)
 
             if self.write_gate is None and self.write_controller is None:
                 next_memory, memory_valid, write_applied, write_logits = self.bank(

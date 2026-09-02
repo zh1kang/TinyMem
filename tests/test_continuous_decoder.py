@@ -389,6 +389,49 @@ def test_later_loss_reaches_adaptive_write_controller() -> None:
     assert torch.count_nonzero(gradient) > 0
 
 
+def test_forced_writes_override_adaptive_actions_during_evaluation() -> None:
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MultiSlotAttentionMemoryCompressor(8, summary_slots=1),
+        GatedRecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+        write_controller=AdaptiveWriteController(8),
+    )
+    decoder.eval()
+
+    output = decoder(
+        torch.tensor([[1, 2, 3, 4]]),
+        torch.ones(1, 4, dtype=torch.bool),
+        forced_writes=torch.tensor([[False, True]]),
+    )
+
+    assert torch.equal(
+        output.writes_applied,
+        torch.tensor([[False, True]]),
+    )
+    assert output.controller_assignments is not None
+    assert output.controller_assignments[:, :, 1].all()
+
+
+def test_forced_writes_are_rejected_during_training() -> None:
+    decoder = make_decoder(segment_length=2)
+
+    with pytest.raises(ValueError, match="only during evaluation"):
+        decoder(
+            torch.tensor([[1, 2]]),
+            torch.ones(1, 2, dtype=torch.bool),
+            forced_writes=torch.ones(1, 1, dtype=torch.bool),
+        )
+
+
 def test_decoder_rejects_two_external_write_deciders() -> None:
     config = ModelConfig(
         vocab_size=16,

@@ -468,6 +468,7 @@ def evaluate_continuous_answers(
     device: torch.device | str,
     intervention_name: str = "normal",
     memory_intervention: MemoryIntervention | None = None,
+    forced_writes: torch.Tensor | None = None,
 ) -> ContinuousAnswerResult:
     """Evaluate exact answer accuracy on encoded controlled examples."""
     if not isinstance(decoder, SegmentedContinuousDecoder):
@@ -484,6 +485,22 @@ def evaluate_continuous_answers(
         raise ValueError("intervention_name must be a nonempty string")
     if memory_intervention is not None and not callable(memory_intervention):
         raise TypeError("memory_intervention must be callable or None")
+    if forced_writes is not None:
+        if not isinstance(forced_writes, torch.Tensor):
+            raise TypeError("forced_writes must be a torch.Tensor or None")
+        if forced_writes.ndim != 2 or forced_writes.shape[0] != len(examples):
+            raise ValueError(
+                "forced_writes must have shape [examples, padded_segments]"
+            )
+        if forced_writes.dtype != torch.bool:
+            raise TypeError("forced_writes must be a boolean tensor")
+        required_segments = max(
+            (len(example.input_ids) + decoder.segment_length - 1)
+            // decoder.segment_length
+            for example in examples
+        )
+        if forced_writes.shape[1] < required_segments:
+            raise ValueError("forced_writes does not cover every example segment")
 
     batches = _evaluation_batches(
         len(examples),
@@ -517,6 +534,19 @@ def evaluate_continuous_answers(
                 input_ids,
                 token_valid,
                 memory_intervention=memory_intervention,
+                forced_writes=(
+                    forced_writes[
+                        batch_slice,
+                        : (
+                            input_ids.shape[1]
+                            + decoder.segment_length
+                            - 1
+                        )
+                        // decoder.segment_length,
+                    ].to(device=device)
+                    if forced_writes is not None
+                    else None
+                ),
             )
             rows = torch.arange(len(batch), device=device)
             prompt_positions = torch.tensor(

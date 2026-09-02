@@ -17,6 +17,7 @@ from tinymem.memory.continuous import (
     MeanPoolMemoryCompressor,
     MultiSlotAttentionMemoryCompressor,
 )
+from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.recurrent_memory import (
     GatedRecurrentMemoryBank,
     RecurrentMemoryBank,
@@ -70,6 +71,26 @@ def make_token_gated_decoder(vocab_size: int) -> SegmentedContinuousDecoder:
         segment_length=2,
         write_gate=TokenSegmentWriteGate(8),
     )
+
+
+def make_adaptive_decoder(vocab_size: int) -> SegmentedContinuousDecoder:
+    config = ModelConfig(
+        vocab_size=vocab_size,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MultiSlotAttentionMemoryCompressor(8, summary_slots=1),
+        GatedRecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+        write_controller=AdaptiveWriteController(8),
+    )
+    decoder.eval()
+    return decoder
 
 
 def test_memory_interventions_preserve_the_expected_controls() -> None:
@@ -196,6 +217,47 @@ def test_encoded_validation_evaluation_handles_shuffled_singleton_remainder() ->
     assert result.intervention == "shuffle"
     assert result.count == 3
     assert result.correct <= result.count
+
+
+def test_encoded_evaluation_applies_forced_write_policy() -> None:
+    examples = parse_babilong_records(
+        [
+            {
+                "input": "Mary moved to the kitchen.",
+                "question": "Where is Mary? ",
+                "target": "kitchen",
+            },
+            {
+                "input": "John went to the office.",
+                "question": "Where is John? ",
+                "target": "office",
+            },
+        ],
+        task_id="qa1",
+        split="validation",
+        source_name="fixture.txt",
+    )
+    vocabulary = build_qa_vocabulary(examples)
+    encoded = [encode_qa_example(example, vocabulary) for example in examples]
+    decoder = make_adaptive_decoder(len(vocabulary))
+    max_segments = max(
+        (len(example.input_ids) + decoder.segment_length - 1)
+        // decoder.segment_length
+        for example in encoded
+    )
+    forced = torch.zeros(len(encoded), max_segments, dtype=torch.bool)
+
+    result = evaluate_continuous_answers(
+        decoder,
+        encoded,
+        batch_size=2,
+        pad_id=vocabulary.token_to_id["<pad>"],
+        device="cpu",
+        intervention_name="never_write",
+        forced_writes=forced,
+    )
+
+    assert result.count == 2
 
 
 def test_encoded_validation_evaluation_rejects_single_item_shuffle_batches() -> None:
