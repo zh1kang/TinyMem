@@ -27,6 +27,20 @@ class TokenSegmentWriteGate(nn.Module):
         nn.init.zeros_(self.score.weight)
         nn.init.ones_(self.score.bias)
 
+    def _pattern_features(
+        self,
+        token_embeddings: torch.Tensor,
+    ) -> torch.Tensor:
+        padded = F.pad(token_embeddings, (0, 0, 1, 1))
+        token_count = token_embeddings.shape[1]
+        weight = self.patterns.weight
+        bias = self.patterns.bias
+        return (
+            F.linear(padded[:, :token_count], weight[:, :, 0], bias)
+            + F.linear(padded[:, 1 : token_count + 1], weight[:, :, 1])
+            + F.linear(padded[:, 2 : token_count + 2], weight[:, :, 2])
+        )
+
     def forward(
         self,
         token_embeddings: torch.Tensor,
@@ -63,9 +77,7 @@ class TokenSegmentWriteGate(nn.Module):
         masked_embeddings = token_embeddings * token_valid.unsqueeze(-1).to(
             dtype=token_embeddings.dtype
         )
-        features = F.silu(
-            self.patterns(masked_embeddings.transpose(1, 2))
-        ).transpose(1, 2)
+        features = F.silu(self._pattern_features(masked_embeddings))
         features = features.masked_fill(
             ~token_valid.unsqueeze(-1),
             torch.finfo(features.dtype).min,

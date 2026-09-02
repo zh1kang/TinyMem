@@ -35,6 +35,17 @@ def test_token_write_gate_ignores_invalid_embedding_values() -> None:
     torch.testing.assert_close(actual, expected)
 
 
+def test_linear_pattern_features_match_width_three_convolution() -> None:
+    torch.manual_seed(41)
+    gate = TokenSegmentWriteGate(4)
+    embeddings = torch.randn(2, 5, 4)
+
+    expected = gate.patterns(embeddings.transpose(1, 2)).transpose(1, 2)
+    actual = gate._pattern_features(embeddings)
+
+    torch.testing.assert_close(actual, expected)
+
+
 def test_token_write_gate_handles_an_all_invalid_row() -> None:
     gate = TokenSegmentWriteGate(4)
 
