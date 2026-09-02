@@ -87,6 +87,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gumbel-anneal-steps", type=int, default=2000)
     parser.add_argument("--codebook-usage-loss-weight", type=float, default=0.0)
     parser.add_argument(
+        "--codebook-evaluation-mode",
+        choices=("hard", "soft"),
+        default="hard",
+    )
+    parser.add_argument(
         "--memory-update",
         choices=("fifo", "gated"),
         default="fifo",
@@ -264,6 +269,13 @@ def main() -> None:
             "codebook usage loss weight requires the discrete compressor"
         )
     if (
+        args.compressor != "discrete"
+        and args.codebook_evaluation_mode != "hard"
+    ):
+        raise ValueError(
+            "soft codebook evaluation requires the discrete compressor"
+        )
+    if (
         args.write_gate_kernel_size <= 0
         or args.write_gate_kernel_size % 2 == 0
     ):
@@ -312,6 +324,7 @@ def main() -> None:
             codebook_size=args.codebook_size,
             summary_slots=args.summaries_per_segment,
             temperature=args.gumbel_temperature_start,
+            evaluation_mode=args.codebook_evaluation_mode,
         )
     elif args.compressor == "mean":
         compressor = MeanPoolMemoryCompressor(model.config.d_model)
@@ -898,6 +911,11 @@ def main() -> None:
             else None
         ),
         "codebook_usage_loss_weight": args.codebook_usage_loss_weight,
+        "codebook_evaluation_mode": (
+            args.codebook_evaluation_mode
+            if args.compressor == "discrete"
+            else None
+        ),
         "final_training_loss": losses[-1],
         "validation_evaluations": [
             result.to_dict() for result in validation_evaluations
@@ -973,6 +991,11 @@ def main() -> None:
             "gumbel_temperature_end": args.gumbel_temperature_end,
             "gumbel_anneal_steps": args.gumbel_anneal_steps,
             "codebook_usage_loss_weight": args.codebook_usage_loss_weight,
+            "codebook_evaluation_mode": (
+                args.codebook_evaluation_mode
+                if args.compressor == "discrete"
+                else None
+            ),
         },
     )
     print(json.dumps(result_document, indent=2, sort_keys=True))

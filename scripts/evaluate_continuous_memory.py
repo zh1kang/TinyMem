@@ -19,6 +19,7 @@ from tinymem.evaluation.continuous_memory import (
     shuffle_memory,
     zero_memory,
 )
+from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.utils.device import select_device
 from tinymem.utils.experiment import create_run_directory, current_git_commit
 
@@ -28,6 +29,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--data-file", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument(
+        "--codebook-evaluation-mode",
+        choices=("hard", "soft"),
+        default="hard",
+    )
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda", "mps"),
@@ -70,6 +76,16 @@ def main() -> None:
     data_path = args.data_file.resolve()
     device = select_device(args.device)
     loaded = load_continuous_checkpoint(checkpoint_path, device=device)
+    is_discrete = isinstance(
+        loaded.decoder.compressor,
+        DiscreteMemoryCompressor,
+    )
+    if is_discrete:
+        loaded.decoder.compressor.set_evaluation_mode(
+            args.codebook_evaluation_mode
+        )
+    elif args.codebook_evaluation_mode != "hard":
+        raise ValueError("soft codebook evaluation requires a discrete checkpoint")
     examples = load_babilong_file(
         data_path,
         task_id="qa1",
@@ -136,6 +152,9 @@ def main() -> None:
         "training_git_commit": _training_commit(checkpoint_path),
         "evaluation_git_commit": evaluation_commit,
         "architecture": loaded.architecture,
+        "codebook_evaluation_mode": (
+            args.codebook_evaluation_mode if is_discrete else None
+        ),
         "checkpoint": str(checkpoint_path),
         "checkpoint_sha256": _sha256(checkpoint_path),
         "dataset_file": str(data_path),

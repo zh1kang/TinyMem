@@ -9,6 +9,9 @@ from torch import nn
 from torch.nn import functional as F
 
 
+CODEBOOK_EVALUATION_MODES = frozenset(("hard", "soft"))
+
+
 @dataclass(frozen=True)
 class CodebookOutput:
     """Return decoded memory vectors and their discrete assignment trace."""
@@ -22,7 +25,13 @@ class CodebookOutput:
 class GumbelSoftmaxCodebook(nn.Module):
     """Select learned memory vectors with straight-through Gumbel-Softmax."""
 
-    def __init__(self, model_width: int, codebook_size: int) -> None:
+    def __init__(
+        self,
+        model_width: int,
+        codebook_size: int,
+        *,
+        evaluation_mode: str = "hard",
+    ) -> None:
         super().__init__()
         for name, value in (
             ("model_width", model_width),
@@ -37,6 +46,15 @@ class GumbelSoftmaxCodebook(nn.Module):
         self.codebook_size = int(codebook_size)
         self.embedding = nn.Embedding(self.codebook_size, self.model_width)
         nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
+        self.set_evaluation_mode(evaluation_mode)
+
+    def set_evaluation_mode(self, mode: str) -> None:
+        """Select hard discrete codes or soft mixtures during evaluation."""
+        if not isinstance(mode, str):
+            raise TypeError("evaluation mode must be a string")
+        if mode not in CODEBOOK_EVALUATION_MODES:
+            raise ValueError("evaluation mode must be 'hard' or 'soft'")
+        self.evaluation_mode = mode
 
     def _validate_inputs(
         self,
@@ -110,15 +128,16 @@ class GumbelSoftmaxCodebook(nn.Module):
             indices,
             num_classes=self.codebook_size,
         ).to(dtype=logits.dtype)
-        assignments = (
-            hard_assignments
-            if not self.training
-            else (
+        if self.training:
+            assignments = (
                 hard_assignments
                 - relaxed_assignments.detach()
                 + relaxed_assignments
             )
-        )
+        elif self.evaluation_mode == "hard":
+            assignments = hard_assignments
+        else:
+            assignments = probabilities
 
         expanded_valid = valid.unsqueeze(-1)
         probabilities = probabilities * expanded_valid

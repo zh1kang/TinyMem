@@ -37,6 +37,7 @@ class DiscreteMemoryCompressor(ContinuousMemoryCompressor):
         codebook_size: int,
         summary_slots: int,
         temperature: float = 1.0,
+        evaluation_mode: str = "hard",
     ) -> None:
         super().__init__(model_width)
         for name, value in (
@@ -61,6 +62,7 @@ class DiscreteMemoryCompressor(ContinuousMemoryCompressor):
         self.codebook = GumbelSoftmaxCodebook(
             self.model_width,
             self.codebook_size,
+            evaluation_mode=evaluation_mode,
         )
         self.register_buffer(
             "_temperature",
@@ -84,6 +86,10 @@ class DiscreteMemoryCompressor(ContinuousMemoryCompressor):
         """Update the non-learned temperature saved in the state dictionary."""
         value = self._validate_temperature(temperature)
         self._temperature.fill_(value)
+
+    def set_evaluation_mode(self, mode: str) -> None:
+        """Select the code representation used only during evaluation."""
+        self.codebook.set_evaluation_mode(mode)
 
     def compress(
         self,

@@ -80,6 +80,38 @@ def test_lower_temperature_sharpens_evaluation_probabilities() -> None:
     assert cold.probabilities.max() > warm.probabilities.max()
 
 
+def test_codebook_soft_evaluation_uses_probability_mixture() -> None:
+    codebook = GumbelSoftmaxCodebook(
+        model_width=2,
+        codebook_size=3,
+        evaluation_mode="soft",
+    )
+    codebook.eval()
+    logits = torch.tensor([[[3.0, 2.0, 1.0]]])
+    valid = torch.ones(1, 1, dtype=torch.bool)
+
+    output = codebook(logits, valid, temperature=1.0)
+
+    torch.testing.assert_close(output.assignments, output.probabilities)
+    torch.testing.assert_close(
+        output.values,
+        output.probabilities @ codebook.embedding.weight,
+    )
+    assert torch.count_nonzero(output.assignments) == 3
+
+
+@pytest.mark.parametrize("mode", [None, 1, "discrete", ""])
+def test_codebook_rejects_invalid_evaluation_mode(mode: object) -> None:
+    expected = TypeError if not isinstance(mode, str) else ValueError
+
+    with pytest.raises(expected):
+        GumbelSoftmaxCodebook(
+            model_width=2,
+            codebook_size=3,
+            evaluation_mode=mode,
+        )
+
+
 def test_training_probabilities_exclude_sampling_noise() -> None:
     codebook = GumbelSoftmaxCodebook(model_width=2, codebook_size=3)
     logits = torch.tensor([[[1.0, 2.0, 3.0]]])

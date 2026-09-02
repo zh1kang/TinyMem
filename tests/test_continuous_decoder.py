@@ -119,6 +119,42 @@ def test_segmented_decoder_stores_discrete_codes_at_evaluation() -> None:
     assert output.prequantized_codes.shape == (1, 2, 8)
 
 
+def test_segmented_decoder_can_ablate_with_soft_evaluation_codes() -> None:
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    compressor = DiscreteMemoryCompressor(
+        8,
+        codebook_size=6,
+        summary_slots=1,
+        evaluation_mode="soft",
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        compressor,
+        RecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+    )
+    decoder.eval()
+
+    output = decoder(
+        torch.tensor([[1, 2, 3, 4]]),
+        torch.ones(1, 4, dtype=torch.bool),
+    )
+
+    assert output.code_assignments is not None
+    expected_memory = (
+        output.code_assignments @ compressor.codebook.embedding.weight
+    )
+    torch.testing.assert_close(output.memory, expected_memory)
+    assert torch.all((output.code_assignments > 0).sum(dim=-1) > 1)
+
+
 def test_later_segment_loss_reaches_discrete_compressor() -> None:
     torch.manual_seed(19)
     config = ModelConfig(

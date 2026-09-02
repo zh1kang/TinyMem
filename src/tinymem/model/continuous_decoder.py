@@ -282,7 +282,13 @@ class SegmentedContinuousDecoder(nn.Module):
                 dtype=memory.dtype,
                 device=input_ids.device,
             )
-            if discrete_compressor is not None and self.training
+            if (
+                discrete_compressor is not None
+                and (
+                    self.training
+                    or discrete_compressor.codebook.evaluation_mode == "soft"
+                )
+            )
             else None
         )
         proposed_code_indices = []
@@ -370,8 +376,7 @@ class SegmentedContinuousDecoder(nn.Module):
                     discrete_output.indices,
                     write_applied,
                 )
-                if self.training:
-                    assert memory_assignments is not None
+                if memory_assignments is not None:
                     memory_assignments = self._update_assignment_state(
                         memory_assignments,
                         discrete_output.assignments,
