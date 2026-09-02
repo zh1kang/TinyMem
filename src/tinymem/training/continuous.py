@@ -68,6 +68,79 @@ def qa1_requires_cross_segment_memory(
     )
 
 
+def evidence_segment_write_targets(
+    example: ReasoningExample,
+    vocabulary: ControlledVocabulary,
+    *,
+    segment_length: int,
+    prompt_ids: Sequence[int],
+) -> tuple[bool, ...]:
+    """Label prompt segments that overlap exact controlled evidence."""
+    if not isinstance(example, ReasoningExample):
+        raise TypeError("example must be a ReasoningExample")
+    if not isinstance(vocabulary, ControlledVocabulary):
+        raise TypeError("vocabulary must be a ControlledVocabulary")
+    if isinstance(segment_length, bool) or not isinstance(segment_length, int):
+        raise TypeError("segment_length must be an integer")
+    if segment_length <= 0:
+        raise ValueError("segment_length must be positive")
+    if not isinstance(prompt_ids, Sequence) or isinstance(prompt_ids, (str, bytes)):
+        raise TypeError("prompt_ids must be a sequence of integers")
+    if not prompt_ids:
+        raise ValueError("prompt_ids must be nonempty")
+    if example.evidence_facts is None:
+        raise ValueError("write supervision requires exact evidence facts")
+
+    segment_count = (len(prompt_ids) + segment_length - 1) // segment_length
+    targets = [False] * segment_count
+    for fact in example.evidence_facts:
+        fact_ids = vocabulary.encode(fact.text)
+        start = 1 + len(vocabulary.encode(example.context[: fact.start_char]))
+        end = start + len(fact_ids)
+        if list(prompt_ids[start:end]) != fact_ids:
+            raise ValueError("evidence span does not align with prompt tokens")
+        for segment in range(
+            start // segment_length,
+            (end - 1) // segment_length + 1,
+        ):
+            targets[segment] = True
+    return tuple(targets)
+
+
+def encode_qa_with_evidence_write_targets(
+    example: ReasoningExample,
+    vocabulary: ControlledVocabulary,
+    *,
+    segment_length: int,
+) -> EncodedQAExample:
+    """Encode one controlled example with exact evidence-write labels."""
+    prompt_ids = tuple(
+        vocabulary.encode(format_qa_prompt(example), add_bos=True)
+    )
+    answer_ids = vocabulary.encode(example.answer)
+    if len(answer_ids) != 1:
+        raise ValueError("controlled answer must encode to exactly one token")
+    targets = list(
+        evidence_segment_write_targets(
+            example,
+            vocabulary,
+            segment_length=segment_length,
+            prompt_ids=prompt_ids,
+        )
+    )
+    input_ids = (*prompt_ids, answer_ids[0])
+    input_segment_count = (
+        len(input_ids) + segment_length - 1
+    ) // segment_length
+    targets.extend(False for _ in range(input_segment_count - len(targets)))
+    return EncodedQAExample(
+        input_ids=input_ids,
+        answer_id=answer_ids[0],
+        source_example_id=example.source_example_id,
+        segment_write_targets=tuple(targets),
+    )
+
+
 def collate_segmented_answer_supervision(
     examples: Sequence[EncodedQAExample],
     *,

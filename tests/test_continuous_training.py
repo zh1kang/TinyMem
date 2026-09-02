@@ -1,6 +1,7 @@
 import torch
 
 from tinymem.data.babi import parse_babi_lines
+from tinymem.data.babilong import parse_babilong_records
 from tinymem.data.vocabulary import ControlledVocabulary
 from tinymem.memory.continuous import (
     MeanPoolMemoryCompressor,
@@ -16,6 +17,7 @@ from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.continuous import (
     collate_segmented_answer_supervision,
     encode_qa_with_distributed_facts,
+    encode_qa_with_evidence_write_targets,
     encode_qa_with_token_distractor,
     encode_qa_with_token_distractors,
     qa1_requires_cross_segment_memory,
@@ -215,6 +217,36 @@ def test_distributed_fact_encoding_separates_fact_write_targets() -> None:
     )
     assert not targets[0]
     assert not targets[-1]
+
+
+def test_evidence_write_encoding_labels_only_the_supporting_fact() -> None:
+    vocabulary, _ = make_examples()
+    raw_example = parse_babilong_records(
+        [
+            {
+                "input": (
+                    "Mary moved to the kitchen.\n"
+                    "John went to the office."
+                ),
+                "question": "Where is Mary? ",
+                "target": "kitchen",
+            }
+        ],
+        task_id="qa1",
+        split="train",
+        source_name="fixture.txt",
+    )[0]
+
+    encoded = encode_qa_with_evidence_write_targets(
+        raw_example,
+        vocabulary,
+        segment_length=4,
+    )
+
+    assert encoded.input_ids[-1] == encoded.answer_id
+    assert encoded.segment_write_targets is not None
+    assert any(encoded.segment_write_targets)
+    assert not encoded.segment_write_targets[-1]
 
 
 def test_symbolic_write_loss_updates_the_gated_classifier() -> None:

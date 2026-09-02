@@ -18,7 +18,10 @@ from tinymem.evaluation.forgetting_curve import (
 )
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.memory_input import AttentionMemory
-from tinymem.training.continuous import collate_segmented_answer_supervision
+from tinymem.training.continuous import (
+    collate_segmented_answer_supervision,
+    evidence_segment_write_targets,
+)
 from tinymem.training.controlled_qa import EncodedQAExample, format_qa_prompt
 
 
@@ -345,31 +348,6 @@ def _write_decision_counts(
     )
 
 
-def _evidence_segment_targets(
-    example: ReasoningExample,
-    vocabulary: ControlledVocabulary,
-    *,
-    segment_length: int,
-    prompt_ids: Sequence[int],
-) -> tuple[bool, ...]:
-    if example.evidence_facts is None:
-        raise ValueError("write evaluation requires exact evidence facts")
-    segment_count = (len(prompt_ids) + segment_length - 1) // segment_length
-    targets = [False] * segment_count
-    for fact in example.evidence_facts:
-        fact_ids = vocabulary.encode(fact.text)
-        start = 1 + len(vocabulary.encode(example.context[: fact.start_char]))
-        end = start + len(fact_ids)
-        if list(prompt_ids[start:end]) != fact_ids:
-            raise ValueError("evidence span does not align with prompt tokens")
-        for segment in range(
-            start // segment_length,
-            (end - 1) // segment_length + 1,
-        ):
-            targets[segment] = True
-    return tuple(targets)
-
-
 @torch.no_grad()
 def calibrate_write_threshold(
     decoder: SegmentedContinuousDecoder,
@@ -639,7 +617,7 @@ def evaluate_continuous_qa1(
                 prompt_ids,
                 answer_ids[0],
                 qa1_evidence_delay_tokens(example, vocabulary),
-                _evidence_segment_targets(
+                evidence_segment_write_targets(
                     example,
                     vocabulary,
                     segment_length=decoder.segment_length,
