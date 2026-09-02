@@ -195,6 +195,34 @@ def test_token_write_gate_is_independent_of_memory_interventions() -> None:
     torch.testing.assert_close(normal.write_logits, zeroed.write_logits)
 
 
+def test_write_gate_gradient_does_not_modify_shared_token_embeddings() -> None:
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MultiSlotAttentionMemoryCompressor(8, summary_slots=1),
+        GatedRecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+        write_gate=TokenSegmentWriteGate(8),
+    )
+
+    output = decoder(
+        torch.tensor([[1, 2, 3, 4]]),
+        torch.ones(1, 4, dtype=torch.bool),
+    )
+    assert output.write_logits is not None
+    output.write_logits.sum().backward()
+
+    assert decoder.model.token_embedding.weight.grad is None
+    assert decoder.write_gate.score.weight.grad is not None
+
+
 def test_first_segment_logits_use_only_initial_empty_memory() -> None:
     torch.manual_seed(7)
     decoder = make_decoder(segment_length=2)

@@ -268,7 +268,7 @@ class SegmentedContinuousDecoder(nn.Module):
                 )
             else:
                 external_write_logits = self.write_gate(
-                    self.model.token_embedding(segment_ids),
+                    self.model.token_embedding(segment_ids).detach(),
                     segment_valid,
                 )
                 assert isinstance(self.bank, GatedRecurrentMemoryBank)
