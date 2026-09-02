@@ -247,6 +247,7 @@ def main() -> None:
         "status": "development_single_seed",
         "task_id": "qa1",
         "device": str(device),
+        "seed": args.seed,
         "git_commit": commit,
         "manifest_sha256": json.loads(
             (repository_root / "data/installed.lock.json").read_text()

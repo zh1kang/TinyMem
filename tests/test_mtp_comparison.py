@@ -47,3 +47,17 @@ def test_aggregate_mtp_delay_runs_pools_counts_and_seed_statistics(
     assert summary["curve"][0]["correct"] == 10
     assert summary["curve"][0]["accuracy"] == pytest.approx(0.5)
     assert summary["curve"][0]["seed_accuracy_mean"] == pytest.approx(0.5)
+
+
+def test_load_mtp_delay_run_accepts_explicit_seed_for_older_results(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "result.json"
+    write_result(path, seed=7, correct=4)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    del document["seed"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    run = load_mtp_delay_run(path, condition="base_mtp4", seed_override=7)
+
+    assert run.seed == 7

@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
         "--condition",
         action="append",
         required=True,
-        metavar="NAME=RESULTS_JSON",
+        metavar="NAME[@SEED]=RESULTS_JSON",
     )
     parser.add_argument(
         "--output-root",
@@ -40,11 +40,27 @@ def main() -> None:
     runs = []
     sources = []
     for value in args.condition:
-        name, separator, raw_path = value.partition("=")
-        if not separator or not name or not raw_path:
-            raise ValueError("conditions must have the form NAME=RESULTS_JSON")
+        condition_spec, separator, raw_path = value.partition("=")
+        if not separator or not condition_spec or not raw_path:
+            raise ValueError(
+                "conditions must have the form NAME[@SEED]=RESULTS_JSON"
+            )
+        name, seed_separator, raw_seed = condition_spec.rpartition("@")
+        if not seed_separator:
+            name = condition_spec
+            seed_override = None
+        else:
+            if not name or not raw_seed:
+                raise ValueError("condition seed override is invalid")
+            seed_override = int(raw_seed)
         path = Path(raw_path).resolve()
-        runs.append(load_mtp_delay_run(path, condition=name))
+        runs.append(
+            load_mtp_delay_run(
+                path,
+                condition=name,
+                seed_override=seed_override,
+            )
+        )
         sources.append({"condition": name, "path": str(path)})
 
     conditions = aggregate_mtp_delay_runs(runs)

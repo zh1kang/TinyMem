@@ -18,7 +18,12 @@ class MTPDelayRun:
     curve: tuple[dict[str, object], ...]
 
 
-def load_mtp_delay_run(path: str | Path, *, condition: str) -> MTPDelayRun:
+def load_mtp_delay_run(
+    path: str | Path,
+    *,
+    condition: str,
+    seed_override: int | None = None,
+) -> MTPDelayRun:
     """Load either a base or continuous-memory delay result."""
     if not isinstance(condition, str) or not condition:
         raise ValueError("condition must be a nonempty string")
@@ -26,9 +31,17 @@ def load_mtp_delay_run(path: str | Path, *, condition: str) -> MTPDelayRun:
     document = json.loads(result_path.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
         raise ValueError("MTP result must contain an object")
-    seed = document.get("seed")
+    if seed_override is not None and (
+        isinstance(seed_override, bool)
+        or not isinstance(seed_override, int)
+        or seed_override < 0
+    ):
+        raise ValueError("seed_override must be a nonnegative integer or None")
+    seed = document.get("seed", seed_override)
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValueError("MTP result must contain a nonnegative seed")
+    if seed_override is not None and seed != seed_override:
+        raise ValueError("seed override does not match the recorded seed")
     raw_horizons = document.get("mtp_horizons", [])
     if not isinstance(raw_horizons, list) or any(
         isinstance(horizon, bool) or not isinstance(horizon, int)
