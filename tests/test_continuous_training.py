@@ -7,6 +7,7 @@ from tinymem.memory.continuous import (
     MeanPoolMemoryCompressor,
     MultiSlotAttentionMemoryCompressor,
 )
+from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.memory.recurrent_memory import (
     GatedRecurrentMemoryBank,
@@ -106,6 +107,24 @@ def make_discrete_decoder(vocab_size: int) -> SegmentedContinuousDecoder:
         ),
         RecurrentMemoryBank(capacity=2, model_width=8),
         segment_length=2,
+    )
+
+
+def make_adaptive_decoder(vocab_size: int) -> SegmentedContinuousDecoder:
+    config = ModelConfig(
+        vocab_size=vocab_size,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    return SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MultiSlotAttentionMemoryCompressor(8, summary_slots=1),
+        GatedRecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+        write_controller=AdaptiveWriteController(8, temperature=2.0),
     )
 
 
@@ -405,5 +424,40 @@ def test_discrete_training_anneals_temperature_and_uses_codes() -> None:
     assert decoder.compressor.temperature == 0.5
     assert not torch.equal(
         decoder.compressor.logit_projection.weight,
+        before,
+    )
+
+
+def test_adaptive_training_anneals_temperature_and_charges_writes() -> None:
+    torch.manual_seed(41)
+    vocabulary, examples = make_examples()
+    decoder = make_adaptive_decoder(len(vocabulary))
+    optimizer = torch.optim.AdamW(decoder.parameters(), lr=0.01)
+    assert isinstance(decoder.write_controller, AdaptiveWriteController)
+    before = decoder.write_controller.action_projection.weight.detach().clone()
+
+    losses = train_continuous_answer_supervision(
+        decoder,
+        optimizer,
+        examples,
+        steps=3,
+        batch_size=2,
+        gradient_clip_norm=1.0,
+        pad_id=vocabulary.token_to_id["<pad>"],
+        device="cpu",
+        seed=5,
+        write_cost_weight=0.01,
+        controller_temperature_schedule=GumbelTemperatureSchedule(
+            start=2.0,
+            end=0.5,
+            anneal_steps=2,
+        ),
+    )
+
+    assert len(losses) == 3
+    assert all(torch.isfinite(torch.tensor(losses)))
+    assert decoder.write_controller.temperature == 0.5
+    assert not torch.equal(
+        decoder.write_controller.action_projection.weight,
         before,
     )

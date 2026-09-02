@@ -9,6 +9,7 @@ from torch.optim import Optimizer
 
 from tinymem.data.schema import ReasoningExample
 from tinymem.data.vocabulary import ControlledVocabulary
+from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.training.controlled_qa import (
@@ -16,6 +17,7 @@ from tinymem.training.controlled_qa import (
     collate_answer_supervision,
     format_qa_prompt,
 )
+from tinymem.training.controller import controller_write_cost
 from tinymem.training.discrete import (
     GumbelTemperatureSchedule,
     codebook_usage_loss,
@@ -385,6 +387,8 @@ def train_continuous_answer_supervision(
     codebook_usage_loss_weight: float = 0.0,
     temperature_schedule: GumbelTemperatureSchedule | None = None,
     temperature_step_offset: int = 0,
+    write_cost_weight: float = 0.0,
+    controller_temperature_schedule: GumbelTemperatureSchedule | None = None,
 ) -> list[float]:
     """Train a segmented decoder and return one finite loss per step."""
     if not isinstance(decoder, SegmentedContinuousDecoder):
@@ -423,12 +427,27 @@ def train_continuous_answer_supervision(
         raise TypeError("codebook_usage_loss_weight must be a real number")
     if codebook_usage_loss_weight < 0:
         raise ValueError("codebook_usage_loss_weight must be nonnegative")
+    if isinstance(write_cost_weight, bool) or not isinstance(
+        write_cost_weight,
+        Real,
+    ):
+        raise TypeError("write_cost_weight must be a real number")
+    if write_cost_weight < 0:
+        raise ValueError("write_cost_weight must be nonnegative")
     if temperature_schedule is not None and not isinstance(
         temperature_schedule,
         GumbelTemperatureSchedule,
     ):
         raise TypeError(
             "temperature_schedule must be a GumbelTemperatureSchedule or None"
+        )
+    if controller_temperature_schedule is not None and not isinstance(
+        controller_temperature_schedule,
+        GumbelTemperatureSchedule,
+    ):
+        raise TypeError(
+            "controller_temperature_schedule must be a "
+            "GumbelTemperatureSchedule or None"
         )
     if isinstance(temperature_step_offset, bool) or not isinstance(
         temperature_step_offset,
@@ -446,6 +465,17 @@ def train_continuous_answer_supervision(
         raise ValueError("codebook usage loss requires a discrete compressor")
     if temperature_schedule is not None and discrete_compressor is None:
         raise ValueError("temperature scheduling requires a discrete compressor")
+    adaptive_controller = (
+        decoder.write_controller
+        if isinstance(decoder.write_controller, AdaptiveWriteController)
+        else None
+    )
+    if write_cost_weight > 0 and adaptive_controller is None:
+        raise ValueError("write cost requires an adaptive write controller")
+    if controller_temperature_schedule is not None and adaptive_controller is None:
+        raise ValueError(
+            "controller temperature scheduling requires an adaptive controller"
+        )
     if not examples:
         raise ValueError("examples must be nonempty")
     if not all(isinstance(example, EncodedQAExample) for example in examples):
@@ -465,6 +495,13 @@ def train_continuous_answer_supervision(
             assert discrete_compressor is not None
             discrete_compressor.set_temperature(
                 temperature_schedule.value(temperature_step_offset + step)
+            )
+        if controller_temperature_schedule is not None:
+            assert adaptive_controller is not None
+            adaptive_controller.set_temperature(
+                controller_temperature_schedule.value(
+                    temperature_step_offset + step
+                )
             )
         indices = torch.randint(
             len(examples),
@@ -491,6 +528,18 @@ def train_continuous_answer_supervision(
             loss = loss + codebook_usage_loss_weight * codebook_usage_loss(
                 output.code_assignments,
                 output.proposed_code_valid,
+            )
+        if write_cost_weight > 0:
+            if (
+                output.controller_assignments is None
+                or output.controller_valid is None
+            ):
+                raise ValueError(
+                    "write cost requires adaptive controller assignments"
+                )
+            loss = loss + write_cost_weight * controller_write_cost(
+                output.controller_assignments,
+                output.controller_valid,
             )
         if write_loss_weight > 0:
             if output.write_logits is None:

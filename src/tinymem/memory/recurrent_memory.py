@@ -170,6 +170,7 @@ class GatedRecurrentMemoryBank(RecurrentMemoryBank):
         summary_valid: torch.Tensor,
         *,
         external_write_logits: torch.Tensor | None = None,
+        external_write_strength: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Apply a straight-through learned write decision per batch row."""
         shifted_memory, shifted_valid, row_valid, _ = super().forward(
@@ -178,6 +179,10 @@ class GatedRecurrentMemoryBank(RecurrentMemoryBank):
             summary,
             summary_valid,
         )
+        if external_write_strength is not None and external_write_logits is None:
+            raise ValueError(
+                "external write strength requires external write logits"
+            )
         if external_write_logits is None:
             candidate = F.normalize(summary.mean(dim=1), dim=-1)
             write_logits = self.write_score(candidate)
@@ -193,13 +198,38 @@ class GatedRecurrentMemoryBank(RecurrentMemoryBank):
             if external_write_logits.dtype != memory.dtype:
                 raise TypeError("external write logits and memory must share a dtype")
             write_logits = external_write_logits
-        write_probability = torch.sigmoid(write_logits)
-        hard_write = (write_probability >= self.write_threshold) & row_valid
-        straight_through_write = (
-            hard_write.to(dtype=write_probability.dtype)
-            + write_probability
-            - write_probability.detach()
-        )
+        if external_write_strength is None:
+            write_probability = torch.sigmoid(write_logits)
+            hard_write = (write_probability >= self.write_threshold) & row_valid
+            straight_through_write = (
+                hard_write.to(dtype=write_probability.dtype)
+                + write_probability
+                - write_probability.detach()
+            )
+        else:
+            if external_write_strength.shape != row_valid.shape:
+                raise ValueError(
+                    f"external write strength must have shape {row_valid.shape}"
+                )
+            if not external_write_strength.is_floating_point():
+                raise TypeError("external write strength must be floating point")
+            if external_write_strength.device != memory.device:
+                raise ValueError(
+                    "external write strength and memory must share a device"
+                )
+            if external_write_strength.dtype != memory.dtype:
+                raise TypeError(
+                    "external write strength and memory must share a dtype"
+                )
+            if (
+                (external_write_strength.detach() < 0).any()
+                or (external_write_strength.detach() > 1).any()
+            ):
+                raise ValueError("external write strength must be in [0, 1]")
+            hard_write = (external_write_strength.detach() >= 0.5) & row_valid
+            straight_through_write = external_write_strength * row_valid.to(
+                dtype=external_write_strength.dtype
+            )
         next_memory = memory + straight_through_write.unsqueeze(-1) * (
             shifted_memory - memory
         )

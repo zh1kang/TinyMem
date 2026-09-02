@@ -7,6 +7,7 @@ from tinymem.memory.continuous import (
     MeanPoolMemoryCompressor,
     MultiSlotAttentionMemoryCompressor,
 )
+from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.memory.recurrent_memory import (
     GatedRecurrentMemoryBank,
@@ -312,6 +313,101 @@ def test_segmented_decoder_exposes_gated_write_logits() -> None:
     assert output.writes_applied.shape == (1, 2)
     assert output.write_logits is not None
     assert output.write_logits.shape == (1, 2)
+
+
+def test_segmented_decoder_exposes_adaptive_controller_state() -> None:
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    controller = AdaptiveWriteController(8)
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MultiSlotAttentionMemoryCompressor(8, summary_slots=1),
+        GatedRecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+        write_controller=controller,
+    )
+    decoder.eval()
+
+    output = decoder(
+        torch.tensor([[1, 2, 3, 4]]),
+        torch.ones(1, 4, dtype=torch.bool),
+    )
+
+    assert output.controller_action_logits is not None
+    assert output.controller_action_logits.shape == (1, 2, 2)
+    assert output.controller_probabilities is not None
+    assert output.controller_probabilities.shape == (1, 2, 2)
+    assert output.write_logits is not None
+    torch.testing.assert_close(
+        output.write_logits.sigmoid(),
+        output.controller_probabilities[:, :, 1],
+    )
+    assert output.controller_assignments is not None
+    assert output.controller_assignments.shape == (1, 2, 2)
+    assert output.controller_surprise is not None
+    assert output.controller_surprise.shape == (1, 2)
+    assert output.controller_valid is not None
+    assert output.controller_valid.shape == (1, 2)
+    assert output.controller_valid.all()
+    assert output.writes_applied.all()
+
+
+def test_later_loss_reaches_adaptive_write_controller() -> None:
+    torch.manual_seed(23)
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    controller = AdaptiveWriteController(8)
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MultiSlotAttentionMemoryCompressor(8, summary_slots=1),
+        GatedRecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+        write_controller=controller,
+    )
+
+    output = decoder(
+        torch.tensor([[1, 2, 3, 4]]),
+        torch.ones(1, 4, dtype=torch.bool),
+    )
+    output.logits[:, 2:].square().mean().backward()
+
+    gradient = controller.action_projection.weight.grad
+    assert gradient is not None
+    assert torch.isfinite(gradient).all()
+    assert torch.count_nonzero(gradient) > 0
+
+
+def test_decoder_rejects_two_external_write_deciders() -> None:
+    config = ModelConfig(
+        vocab_size=16,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        SegmentedContinuousDecoder(
+            DecoderOnlyTransformer(config),
+            MultiSlotAttentionMemoryCompressor(8, summary_slots=1),
+            GatedRecurrentMemoryBank(capacity=2, model_width=8),
+            segment_length=2,
+            write_gate=TokenSegmentWriteGate(8),
+            write_controller=AdaptiveWriteController(8),
+        )
 
 
 def test_token_write_gate_is_independent_of_memory_interventions() -> None:

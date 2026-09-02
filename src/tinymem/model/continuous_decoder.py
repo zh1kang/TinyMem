@@ -7,6 +7,7 @@ from numbers import Integral
 import torch
 from torch import nn
 
+from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.continuous import ContinuousMemoryCompressor
 from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.memory.recurrent_memory import (
@@ -39,6 +40,11 @@ class SegmentedContinuousOutput:
     code_assignments: torch.Tensor | None
     proposed_code_valid: torch.Tensor | None
     prequantized_codes: torch.Tensor | None
+    controller_action_logits: torch.Tensor | None
+    controller_probabilities: torch.Tensor | None
+    controller_assignments: torch.Tensor | None
+    controller_surprise: torch.Tensor | None
+    controller_valid: torch.Tensor | None
 
 
 class SegmentedContinuousDecoder(nn.Module):
@@ -52,6 +58,7 @@ class SegmentedContinuousDecoder(nn.Module):
         *,
         segment_length: int,
         write_gate: TokenSegmentWriteGate | None = None,
+        write_controller: AdaptiveWriteController | None = None,
         memory_position_mode: str = "absolute",
     ) -> None:
         super().__init__()
@@ -79,16 +86,37 @@ class SegmentedContinuousDecoder(nn.Module):
             TokenSegmentWriteGate,
         ):
             raise TypeError("write_gate must be a TokenSegmentWriteGate or None")
+        if write_controller is not None and not isinstance(
+            write_controller,
+            AdaptiveWriteController,
+        ):
+            raise TypeError(
+                "write_controller must be an AdaptiveWriteController or None"
+            )
+        if write_gate is not None and write_controller is not None:
+            raise ValueError("write_gate and write_controller are mutually exclusive")
         if write_gate is not None and not isinstance(
             bank,
             GatedRecurrentMemoryBank,
         ):
             raise ValueError("write_gate requires a gated recurrent memory bank")
+        if write_controller is not None and not isinstance(
+            bank,
+            GatedRecurrentMemoryBank,
+        ):
+            raise ValueError(
+                "write_controller requires a gated recurrent memory bank"
+            )
         if (
             write_gate is not None
             and write_gate.model_width != model.config.d_model
         ):
             raise ValueError("write gate width must match the model width")
+        if (
+            write_controller is not None
+            and write_controller.model_width != model.config.d_model
+        ):
+            raise ValueError("write controller width must match the model width")
         if not isinstance(memory_position_mode, str):
             raise TypeError("memory_position_mode must be a string")
         if memory_position_mode not in MEMORY_POSITION_MODES:
@@ -101,6 +129,7 @@ class SegmentedContinuousDecoder(nn.Module):
         self.bank = bank
         self.segment_length = int(segment_length)
         self.write_gate = write_gate
+        self.write_controller = write_controller
         self.memory_position_mode = memory_position_mode
 
     def _empty_memory(
@@ -183,6 +212,27 @@ class SegmentedContinuousDecoder(nn.Module):
         return virtual_positions.clamp_min(0).masked_fill(~memory_valid, -1)
 
     @staticmethod
+    def _masked_mean(
+        values: torch.Tensor,
+        valid: torch.Tensor,
+    ) -> torch.Tensor:
+        weights = valid.unsqueeze(-1).to(dtype=values.dtype)
+        counts = weights.sum(dim=1).clamp_min(1)
+        return (values * weights).sum(dim=1) / counts
+
+    @staticmethod
+    def _prediction_surprise(
+        logits: torch.Tensor,
+        valid: torch.Tensor,
+    ) -> torch.Tensor:
+        probabilities = torch.softmax(logits, dim=-1)
+        log_probabilities = torch.log_softmax(logits, dim=-1)
+        entropy = -(probabilities * log_probabilities).sum(dim=-1)
+        weights = valid.to(dtype=entropy.dtype)
+        counts = weights.sum(dim=1, keepdim=True).clamp_min(1)
+        return (entropy * weights).sum(dim=1, keepdim=True) / counts
+
+    @staticmethod
     def _update_slot_state(
         state: torch.Tensor,
         proposed: torch.Tensor,
@@ -202,9 +252,12 @@ class SegmentedContinuousDecoder(nn.Module):
         proposed: torch.Tensor,
         write_applied: torch.Tensor,
         write_logits: torch.Tensor | None,
+        write_strength: torch.Tensor | None = None,
     ) -> torch.Tensor:
         write_count = proposed.shape[1]
         shifted = torch.cat((state[:, write_count:], proposed), dim=1)
+        if write_strength is not None:
+            return state + write_strength.unsqueeze(-1) * (shifted - state)
         if write_logits is None:
             return torch.where(write_applied.unsqueeze(-1), shifted, state)
         write_probability = torch.sigmoid(write_logits)
@@ -259,6 +312,11 @@ class SegmentedContinuousDecoder(nn.Module):
         segment_logits = []
         segment_writes = []
         segment_write_logits = []
+        controller_action_logits = []
+        controller_probabilities = []
+        controller_assignments = []
+        controller_surprises = []
+        controller_valid = []
         discrete_compressor = (
             self.compressor
             if isinstance(self.compressor, DiscreteMemoryCompressor)
@@ -328,7 +386,8 @@ class SegmentedContinuousDecoder(nn.Module):
                 caches=caches,
                 memory=attention_memory,
             )
-            segment_logits.append(self.model.lm_head(hidden_states))
+            current_logits = self.model.lm_head(hidden_states)
+            segment_logits.append(current_logits)
 
             discrete_output = None
             if discrete_compressor is None:
@@ -347,7 +406,31 @@ class SegmentedContinuousDecoder(nn.Module):
                 segment_valid,
                 position_offset=offset,
             ).expand(-1, summary.shape[1])
-            if self.write_gate is None:
+            controller_output = None
+            external_write_strength = None
+            if self.write_controller is not None:
+                controller_surprise = self._prediction_surprise(
+                    current_logits,
+                    segment_valid,
+                )
+                controller_output = self.write_controller(
+                    self._masked_mean(hidden_states, segment_valid),
+                    self._masked_mean(memory, memory_valid),
+                    controller_surprise,
+                    segment_valid.any(dim=1),
+                )
+                external_write_logits = (
+                    controller_output.logits[:, 1:2]
+                    - controller_output.logits[:, 0:1]
+                ) / self.write_controller.temperature
+                external_write_strength = controller_output.write_strength
+            elif self.write_gate is not None:
+                external_write_logits = self.write_gate(
+                    self.model.token_embedding(segment_ids).detach(),
+                    segment_valid,
+                )
+
+            if self.write_gate is None and self.write_controller is None:
                 next_memory, memory_valid, write_applied, write_logits = self.bank(
                     memory,
                     memory_valid,
@@ -355,10 +438,6 @@ class SegmentedContinuousDecoder(nn.Module):
                     summary_valid,
                 )
             else:
-                external_write_logits = self.write_gate(
-                    self.model.token_embedding(segment_ids).detach(),
-                    segment_valid,
-                )
                 assert isinstance(self.bank, GatedRecurrentMemoryBank)
                 next_memory, memory_valid, write_applied, write_logits = self.bank(
                     memory,
@@ -366,6 +445,7 @@ class SegmentedContinuousDecoder(nn.Module):
                     summary,
                     summary_valid,
                     external_write_logits=external_write_logits,
+                    external_write_strength=external_write_strength,
                 )
             if discrete_output is None:
                 memory = next_memory
@@ -382,6 +462,7 @@ class SegmentedContinuousDecoder(nn.Module):
                         discrete_output.assignments,
                         write_applied,
                         write_logits,
+                        external_write_strength,
                     )
                     memory = (
                         memory_assignments
@@ -405,6 +486,12 @@ class SegmentedContinuousDecoder(nn.Module):
             segment_writes.append(write_applied)
             if write_logits is not None:
                 segment_write_logits.append(write_logits)
+            if controller_output is not None:
+                controller_action_logits.append(controller_output.logits)
+                controller_probabilities.append(controller_output.probabilities)
+                controller_assignments.append(controller_output.assignments)
+                controller_surprises.append(controller_surprise)
+                controller_valid.append(segment_valid.any(dim=1))
 
         return SegmentedContinuousOutput(
             logits=torch.cat(segment_logits, dim=1),
@@ -441,6 +528,31 @@ class SegmentedContinuousDecoder(nn.Module):
             prequantized_codes=(
                 torch.cat(prequantized_codes, dim=1)
                 if prequantized_codes
+                else None
+            ),
+            controller_action_logits=(
+                torch.stack(controller_action_logits, dim=1)
+                if controller_action_logits
+                else None
+            ),
+            controller_probabilities=(
+                torch.stack(controller_probabilities, dim=1)
+                if controller_probabilities
+                else None
+            ),
+            controller_assignments=(
+                torch.stack(controller_assignments, dim=1)
+                if controller_assignments
+                else None
+            ),
+            controller_surprise=(
+                torch.cat(controller_surprises, dim=1)
+                if controller_surprises
+                else None
+            ),
+            controller_valid=(
+                torch.stack(controller_valid, dim=1)
+                if controller_valid
                 else None
             ),
         )

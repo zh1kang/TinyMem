@@ -6,6 +6,7 @@ from tinymem.memory.controller import (
     WRITE_ACTION,
     AdaptiveWriteController,
 )
+from tinymem.training.controller import controller_write_cost
 
 
 def make_inputs() -> tuple[torch.Tensor, ...]:
@@ -78,6 +79,26 @@ def test_controller_initially_prefers_write_for_valid_rows() -> None:
         output.actions,
         torch.tensor([WRITE_ACTION, WRITE_ACTION, KEEP_ACTION]),
     )
+
+
+def test_controller_write_cost_counts_only_valid_hard_writes() -> None:
+    assignments = torch.tensor(
+        [
+            [[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]],
+            [[0.0, 1.0], [1.0, 0.0], [0.0, 1.0]],
+        ],
+        requires_grad=True,
+    )
+    valid = torch.tensor(
+        [[True, True, False], [True, True, False]],
+    )
+
+    cost = controller_write_cost(assignments, valid)
+    cost.backward()
+
+    assert float(cost.detach()) == pytest.approx(0.5)
+    assert assignments.grad is not None
+    assert torch.count_nonzero(assignments.grad[:, :, WRITE_ACTION]) == 4
 
 
 def test_controller_temperature_is_checkpointed() -> None:
