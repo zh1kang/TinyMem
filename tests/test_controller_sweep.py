@@ -4,6 +4,7 @@ import pytest
 
 from tinymem.evaluation.controller_sweep import (
     WRITE_COST_WEIGHTS,
+    aggregate_controller_seeds,
     aggregate_controller_sweep,
 )
 
@@ -102,3 +103,67 @@ def test_controller_sweep_requires_exact_weights() -> None:
 
     with pytest.raises(ValueError, match="required write costs"):
         aggregate_controller_sweep(documents)
+
+
+def make_seed_result(seed: int, learned: float, random: float) -> dict[str, object]:
+    document = make_result(1e-4, learned, 1.6)
+    document.update(
+        {
+            "seed": seed,
+            "base_checkpoint_sha256": f"checkpoint-{seed}",
+            "task_id": "qa1",
+            "manifest_sha256": "manifest",
+        }
+    )
+    comparison = document["controller_comparison"]
+    assert isinstance(comparison, dict)
+    comparison.update(
+        {
+            "policies": [
+                {
+                    "policy": "random_matched",
+                    "accuracy": random,
+                    "writes_per_1000_tokens": 1.6,
+                },
+                {
+                    "policy": "learned",
+                    "accuracy": learned,
+                    "writes_per_1000_tokens": 1.6,
+                },
+            ],
+            "relevant_write_rate": 0.9,
+            "background_write_rate": 0.01,
+            "learned_vs_random": {
+                "accuracy_difference": learned - random,
+                "significant": learned > random,
+            },
+        }
+    )
+    return document
+
+
+def test_controller_seed_aggregation_reports_variation() -> None:
+    result = aggregate_controller_seeds(
+        [
+            make_seed_result(1, 0.25, 0.18),
+            make_seed_result(2, 0.17, 0.14),
+            make_seed_result(3, 0.16, 0.17),
+        ]
+    )
+
+    assert result["status"] == "development_multi_seed"
+    assert result["learned_beats_random_seed_count"] == 2
+    assert result["learned_vs_random_significant_seed_count"] == 2
+    assert result["learned_vs_random_accuracy_difference_mean"] == pytest.approx(0.03)
+    learned = result["policies"][1]
+    assert learned["accuracy_mean"] == pytest.approx(0.1933333333)
+    assert learned["accuracy_sample_std"] > 0
+
+
+def test_controller_seed_aggregation_requires_independent_checkpoints() -> None:
+    first = make_seed_result(1, 0.2, 0.1)
+    second = make_seed_result(2, 0.2, 0.1)
+    second["base_checkpoint_sha256"] = first["base_checkpoint_sha256"]
+
+    with pytest.raises(ValueError, match="independently trained"):
+        aggregate_controller_seeds([first, second])
