@@ -5,6 +5,7 @@ import torch
 
 from tinymem.data.babilong import parse_babilong_records
 from tinymem.evaluation.continuous_memory import (
+    calibrate_write_threshold,
     drop_memory,
     evaluate_continuous_answers,
     evaluate_continuous_qa1,
@@ -12,8 +13,15 @@ from tinymem.evaluation.continuous_memory import (
     shuffle_memory,
     zero_memory,
 )
-from tinymem.memory.continuous import MeanPoolMemoryCompressor
-from tinymem.memory.recurrent_memory import RecurrentMemoryBank
+from tinymem.memory.continuous import (
+    MeanPoolMemoryCompressor,
+    MultiSlotAttentionMemoryCompressor,
+)
+from tinymem.memory.recurrent_memory import (
+    GatedRecurrentMemoryBank,
+    RecurrentMemoryBank,
+)
+from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.config import ModelConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.memory_input import AttentionMemory
@@ -43,6 +51,24 @@ def make_decoder(vocab_size: int) -> SegmentedContinuousDecoder:
         MeanPoolMemoryCompressor(config.d_model),
         RecurrentMemoryBank(capacity=2, model_width=config.d_model),
         segment_length=2,
+    )
+
+
+def make_token_gated_decoder(vocab_size: int) -> SegmentedContinuousDecoder:
+    config = ModelConfig(
+        vocab_size=vocab_size,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    return SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MultiSlotAttentionMemoryCompressor(8, summary_slots=1),
+        GatedRecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=2,
+        write_gate=TokenSegmentWriteGate(8),
     )
 
 
@@ -244,3 +270,59 @@ def test_encoded_validation_evaluation_counts_write_decisions() -> None:
     assert result.writes.true_positive == 2
     assert result.writes.false_positive == expected_segments - 2
     assert result.writes.false_negative == 0
+
+
+def test_write_threshold_calibration_enforces_zero_false_positives() -> None:
+    examples = parse_babilong_records(
+        [
+            {
+                "input": "Mary moved to the kitchen.",
+                "question": "Where is Mary? ",
+                "target": "kitchen",
+            },
+            {
+                "input": "John moved to the office.",
+                "question": "Where is John? ",
+                "target": "office",
+            },
+        ],
+        task_id="qa1",
+        split="validation",
+        source_name="fixture.txt",
+    )
+    vocabulary = build_qa_vocabulary(examples)
+    encoded = []
+    for example in examples:
+        item = encode_qa_example(example, vocabulary)
+        segment_count = (len(item.input_ids) + 1) // 2
+        encoded.append(
+            replace(
+                item,
+                segment_write_targets=(True,)
+                + (False,) * (segment_count - 1),
+            )
+        )
+
+    decoder = make_token_gated_decoder(len(vocabulary))
+    result = calibrate_write_threshold(
+        decoder,
+        encoded,
+        batch_size=2,
+        pad_id=vocabulary.token_to_id["<pad>"],
+        device="cpu",
+        max_false_positive_rate=0.0,
+    )
+    decoder.bank.set_write_threshold(result.threshold)
+    evaluation = evaluate_continuous_answers(
+        decoder,
+        encoded,
+        batch_size=2,
+        pad_id=vocabulary.token_to_id["<pad>"],
+        device="cpu",
+    )
+
+    assert 0.5 <= result.threshold <= 1.0
+    assert result.allowed_false_positives == 0
+    assert result.writes.false_positive == 0
+    assert evaluation.writes is not None
+    assert evaluation.writes.false_positive == 0

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from math import comb
+from math import comb, floor
 
 import torch
 
@@ -116,6 +116,24 @@ class WriteDecisionResult:
             "precision": self.precision,
             "recall": self.recall,
             "write_rate": self.write_rate,
+        }
+
+
+@dataclass(frozen=True)
+class WriteThresholdCalibration:
+    """Store a threshold selected under a background-write budget."""
+
+    threshold: float
+    max_false_positive_rate: float
+    allowed_false_positives: int
+    writes: WriteDecisionResult
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "threshold": self.threshold,
+            "max_false_positive_rate": self.max_false_positive_rate,
+            "allowed_false_positives": self.allowed_false_positives,
+            "writes": self.writes.to_dict(),
         }
 
 
@@ -350,6 +368,116 @@ def _evidence_segment_targets(
         ):
             targets[segment] = True
     return tuple(targets)
+
+
+@torch.no_grad()
+def calibrate_write_threshold(
+    decoder: SegmentedContinuousDecoder,
+    examples: Sequence[EncodedQAExample],
+    *,
+    batch_size: int,
+    pad_id: int,
+    device: torch.device | str,
+    max_false_positive_rate: float,
+    minimum_threshold: float = 0.5,
+) -> WriteThresholdCalibration:
+    """Select the lowest threshold that meets a false-positive budget."""
+    if not isinstance(decoder, SegmentedContinuousDecoder):
+        raise TypeError("decoder must be a SegmentedContinuousDecoder")
+    if not examples:
+        raise ValueError("examples must be nonempty")
+    if not all(isinstance(example, EncodedQAExample) for example in examples):
+        raise TypeError("examples must contain EncodedQAExample values")
+    if not all(example.segment_write_targets is not None for example in examples):
+        raise ValueError("calibration requires write targets for every example")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int):
+        raise TypeError("batch_size must be an integer")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    for name, value in (
+        ("max_false_positive_rate", max_false_positive_rate),
+        ("minimum_threshold", minimum_threshold),
+    ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{name} must be a real number")
+    if not 0 <= max_false_positive_rate < 1:
+        raise ValueError("max_false_positive_rate must be in [0, 1)")
+    if not 0 < minimum_threshold <= 1:
+        raise ValueError("minimum_threshold must be in (0, 1]")
+
+    probabilities = []
+    targets = []
+    was_training = decoder.training
+    decoder.eval()
+    try:
+        for batch_slice in _evaluation_batches(
+            len(examples),
+            batch_size,
+            require_pairs=False,
+        ):
+            batch = examples[batch_slice]
+            input_ids, _, token_valid = collate_segmented_answer_supervision(
+                batch,
+                pad_id=pad_id,
+                device=device,
+            )
+            output = decoder(input_ids, token_valid)
+            if output.write_logits is None:
+                raise ValueError("calibration requires a learned write gate")
+            for row, example in enumerate(batch):
+                write_targets = example.segment_write_targets
+                assert write_targets is not None
+                expected_count = (
+                    len(example.input_ids) + decoder.segment_length - 1
+                ) // decoder.segment_length
+                if len(write_targets) != expected_count:
+                    raise ValueError(
+                        "segment write targets must match the encoded sequence"
+                    )
+                probabilities.append(
+                    output.write_logits[row, :expected_count].sigmoid().cpu()
+                )
+                targets.append(torch.tensor(write_targets, dtype=torch.bool))
+    finally:
+        decoder.train(was_training)
+
+    probability_tensor = torch.cat(probabilities)
+    target_tensor = torch.cat(targets)
+    positive_count = int(target_tensor.sum())
+    negative_count = int((~target_tensor).sum())
+    if positive_count == 0 or negative_count == 0:
+        raise ValueError("calibration requires positive and negative write targets")
+    allowed_false_positives = floor(
+        max_false_positive_rate * negative_count
+    )
+    descending_negatives = probability_tensor[~target_tensor].sort(
+        descending=True
+    ).values
+    threshold = float(minimum_threshold)
+    if allowed_false_positives < negative_count:
+        boundary = descending_negatives[allowed_false_positives]
+        strict_boundary = torch.nextafter(
+            boundary,
+            torch.tensor(float("inf"), dtype=boundary.dtype),
+        )
+        threshold = max(threshold, min(float(strict_boundary), 1.0))
+
+    predicted = probability_tensor >= threshold
+    true_positive = int((predicted & target_tensor).sum())
+    false_positive = int((predicted & ~target_tensor).sum())
+    false_negative = int((~predicted & target_tensor).sum())
+    true_negative = int((~predicted & ~target_tensor).sum())
+    return WriteThresholdCalibration(
+        threshold=threshold,
+        max_false_positive_rate=float(max_false_positive_rate),
+        allowed_false_positives=allowed_false_positives,
+        writes=WriteDecisionResult(
+            true_positive=true_positive,
+            false_positive=false_positive,
+            false_negative=false_negative,
+            true_negative=true_negative,
+        ),
+    )
 
 
 @torch.no_grad()

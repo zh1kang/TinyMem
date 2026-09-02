@@ -16,12 +16,17 @@ from tinymem.data.babilong import load_babilong_file
 from tinymem.data.vocabulary import SPECIAL_TOKENS, ControlledVocabulary
 from tinymem.data.wikitext import load_wikitext_parquet
 from tinymem.evaluation.continuous_memory import (
+    calibrate_write_threshold,
     drop_memory,
     evaluate_continuous_answers,
     evaluate_continuous_qa1,
     paired_accuracy_test,
     shuffle_memory,
     zero_memory,
+)
+from tinymem.evaluation.continuous_checkpoint import (
+    GATED_MULTISLOT_ARCHITECTURE,
+    TOKEN_GATED_MULTISLOT_ARCHITECTURE,
 )
 from tinymem.memory.continuous import (
     AttentionPoolMemoryCompressor,
@@ -32,6 +37,7 @@ from tinymem.memory.recurrent_memory import (
     GatedRecurrentMemoryBank,
     RecurrentMemoryBank,
 )
+from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.config import ExperimentConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.transformer import DecoderOnlyTransformer
@@ -72,6 +78,11 @@ def parse_args() -> argparse.Namespace:
         default="fifo",
     )
     parser.add_argument(
+        "--write-gate",
+        choices=("summary", "token_conv"),
+        default="summary",
+    )
+    parser.add_argument(
         "--max-training-distractor-tokens",
         type=int,
         default=0,
@@ -86,7 +97,23 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
     )
+    parser.add_argument(
+        "--validation-distributed-distractor-tokens",
+        type=int,
+        default=None,
+        help="omit to use the maximum distributed training delay",
+    )
     parser.add_argument("--write-loss-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--write-calibration-max-fpr",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--minimum-calibrated-write-recall",
+        type=float,
+        default=0.8,
+    )
     parser.add_argument(
         "--evaluation-scope",
         choices=("validation", "all"),
@@ -175,6 +202,11 @@ def main() -> None:
         raise ValueError("maximum prefix distractor tokens must be nonnegative")
     if args.max_distributed_distractor_tokens < 0:
         raise ValueError("maximum distributed distractor tokens must be nonnegative")
+    if (
+        args.validation_distributed_distractor_tokens is not None
+        and args.validation_distributed_distractor_tokens < 0
+    ):
+        raise ValueError("validation distributed distractor tokens must be nonnegative")
     if args.max_distributed_distractor_tokens and (
         args.max_training_distractor_tokens
         or args.max_prefix_distractor_tokens
@@ -186,6 +218,30 @@ def main() -> None:
         raise ValueError("write loss weight must be nonnegative")
     if args.write_loss_weight > 0 and args.memory_update != "gated":
         raise ValueError("write loss requires gated memory updates")
+    if args.write_gate == "token_conv" and args.memory_update != "gated":
+        raise ValueError("token convolution write gate requires gated memory updates")
+    if args.write_gate == "token_conv" and args.compressor != "multislot_attention":
+        raise ValueError("token convolution write gate requires multislot attention")
+    if args.write_calibration_max_fpr is not None:
+        if not 0 <= args.write_calibration_max_fpr < 1:
+            raise ValueError("write calibration maximum FPR must be in [0, 1)")
+        if args.write_gate != "token_conv":
+            raise ValueError("write calibration requires the token convolution gate")
+    if not 0 <= args.minimum_calibrated_write_recall <= 1:
+        raise ValueError("minimum calibrated write recall must be in [0, 1]")
+
+    validation_distributed_distractor_tokens = (
+        args.max_distributed_distractor_tokens
+        if args.validation_distributed_distractor_tokens is None
+        else args.validation_distributed_distractor_tokens
+    )
+    if (
+        validation_distributed_distractor_tokens
+        and not args.max_distributed_distractor_tokens
+    ):
+        raise ValueError(
+            "distributed validation requires distributed distractor training"
+        )
 
     repository_root = Path(__file__).resolve().parents[1]
     checkpoint_path = args.base_checkpoint.resolve()
@@ -220,6 +276,11 @@ def main() -> None:
             model_width=model.config.d_model,
         ),
         segment_length=args.segment_length,
+        write_gate=(
+            TokenSegmentWriteGate(model.config.d_model)
+            if args.write_gate == "token_conv"
+            else None
+        ),
     ).to(device)
     optimizer = torch.optim.AdamW(
         decoder.parameters(),
@@ -285,6 +346,7 @@ def main() -> None:
             args.max_training_distractor_tokens,
             args.max_prefix_distractor_tokens,
             args.max_distributed_distractor_tokens,
+            validation_distributed_distractor_tokens,
         )
         if min(len(training_filler_ids), len(validation_filler_ids)) < (
             maximum_filler
@@ -327,7 +389,7 @@ def main() -> None:
                 )
                 eligible_index += 1
 
-            delay = args.max_distributed_distractor_tokens
+            delay = validation_distributed_distractor_tokens
             eligible_index = 0
             for example in validation_examples:
                 if not qa1_requires_cross_segment_memory(
@@ -477,6 +539,24 @@ def main() -> None:
         )
     )
 
+    write_calibration = None
+    if args.write_calibration_max_fpr is not None:
+        if not delayed_validation_curriculum:
+            raise ValueError(
+                "write calibration requires delayed validation examples"
+            )
+        write_calibration = calibrate_write_threshold(
+            decoder,
+            delayed_validation_curriculum,
+            batch_size=args.eval_batch_size,
+            pad_id=vocabulary.token_to_id["<pad>"],
+            device=device,
+            max_false_positive_rate=args.write_calibration_max_fpr,
+        )
+        if not isinstance(decoder.bank, GatedRecurrentMemoryBank):
+            raise TypeError("write calibration requires a gated memory bank")
+        decoder.bank.set_write_threshold(write_calibration.threshold)
+
     interventions = (
         ("normal", None),
         ("drop", drop_memory),
@@ -514,6 +594,14 @@ def main() -> None:
     validation_exit_criteria_met = all(
         result.significant for result in validation_tests.values()
     )
+    if write_calibration is not None:
+        validation_exit_criteria_met = (
+            validation_exit_criteria_met
+            and write_calibration.writes.false_positive
+            <= write_calibration.allowed_false_positives
+            and write_calibration.writes.recall
+            >= args.minimum_calibrated_write_recall
+        )
     delayed_validation_evaluations = []
     delayed_validation_utility = {}
     delayed_validation_tests = {}
@@ -615,9 +703,10 @@ def main() -> None:
         memory=replace(
             base_config.memory,
             n_slots=args.capacity,
-            codes_per_write=min(
-                base_config.memory.codes_per_write,
-                args.capacity,
+            codes_per_write=(
+                args.summaries_per_segment
+                if args.compressor == "multislot_attention"
+                else 1
             ),
         ),
         training=replace(
@@ -657,6 +746,7 @@ def main() -> None:
         "memory_warmup_steps": args.memory_warmup_steps,
         "compressor": args.compressor,
         "memory_update": args.memory_update,
+        "write_gate": args.write_gate,
         "max_training_distractor_tokens": (
             args.max_training_distractor_tokens
         ),
@@ -664,7 +754,18 @@ def main() -> None:
         "max_distributed_distractor_tokens": (
             args.max_distributed_distractor_tokens
         ),
+        "validation_distributed_distractor_tokens": (
+            validation_distributed_distractor_tokens
+        ),
         "write_loss_weight": args.write_loss_weight,
+        "write_calibration": (
+            write_calibration.to_dict()
+            if write_calibration is not None
+            else None
+        ),
+        "minimum_calibrated_write_recall": (
+            args.minimum_calibrated_write_recall
+        ),
         "segment_length": args.segment_length,
         "capacity": args.capacity,
         "summaries_per_segment": (
@@ -720,8 +821,22 @@ def main() -> None:
         extra={
             "vocabulary": list(vocabulary.id_to_token),
             "architecture": (
-                f"segmented_continuous_{args.compressor}_pool_"
-                f"{args.memory_update}_update"
+                TOKEN_GATED_MULTISLOT_ARCHITECTURE
+                if args.write_gate == "token_conv"
+                else (
+                    GATED_MULTISLOT_ARCHITECTURE
+                    if args.compressor == "multislot_attention"
+                    and args.memory_update == "gated"
+                    else (
+                        f"segmented_continuous_{args.compressor}_pool_"
+                        f"{args.memory_update}_update"
+                    )
+                )
+            ),
+            "write_threshold": (
+                decoder.bank.write_threshold
+                if isinstance(decoder.bank, GatedRecurrentMemoryBank)
+                else None
             ),
         },
     )

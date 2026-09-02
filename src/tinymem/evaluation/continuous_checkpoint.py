@@ -8,6 +8,7 @@ import torch
 from tinymem.data.vocabulary import SPECIAL_TOKENS, ControlledVocabulary
 from tinymem.memory.continuous import MultiSlotAttentionMemoryCompressor
 from tinymem.memory.recurrent_memory import GatedRecurrentMemoryBank
+from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.config import ExperimentConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.transformer import DecoderOnlyTransformer
@@ -16,6 +17,9 @@ from tinymem.training.checkpointing import CHECKPOINT_FORMAT_VERSION
 
 GATED_MULTISLOT_ARCHITECTURE = (
     "segmented_continuous_multislot_attention_pool_gated_update"
+)
+TOKEN_GATED_MULTISLOT_ARCHITECTURE = (
+    "segmented_continuous_multislot_attention_pool_token_gated_update"
 )
 
 
@@ -60,7 +64,10 @@ def load_continuous_checkpoint(
     if not isinstance(extra, dict):
         raise ValueError("continuous checkpoint must contain extra metadata")
     architecture = extra.get("architecture")
-    if architecture != GATED_MULTISLOT_ARCHITECTURE:
+    if architecture not in (
+        GATED_MULTISLOT_ARCHITECTURE,
+        TOKEN_GATED_MULTISLOT_ARCHITECTURE,
+    ):
         raise ValueError(
             "unsupported continuous checkpoint architecture: "
             f"{architecture!r}"
@@ -75,6 +82,14 @@ def load_continuous_checkpoint(
     vocabulary = ControlledVocabulary(tokens[len(SPECIAL_TOKENS) :])
     if vocabulary.id_to_token != tuple(tokens):
         raise ValueError("continuous checkpoint vocabulary is not in standard order")
+    write_threshold = extra.get("write_threshold", 0.5)
+    if isinstance(write_threshold, bool) or not isinstance(
+        write_threshold,
+        (int, float),
+    ):
+        raise ValueError("continuous checkpoint has an invalid write threshold")
+    if not 0 < write_threshold <= 1:
+        raise ValueError("continuous checkpoint has an invalid write threshold")
 
     state = payload.get("model_state")
     if not isinstance(state, dict):
@@ -94,8 +109,14 @@ def load_continuous_checkpoint(
         GatedRecurrentMemoryBank(
             capacity=config.memory.n_slots,
             model_width=config.model.d_model,
+            write_threshold=float(write_threshold),
         ),
         segment_length=config.stream.segment_length,
+        write_gate=(
+            TokenSegmentWriteGate(config.model.d_model)
+            if architecture == TOKEN_GATED_MULTISLOT_ARCHITECTURE
+            else None
+        ),
     )
     decoder.load_state_dict(state)
     decoder.to(device)
