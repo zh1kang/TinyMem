@@ -109,21 +109,26 @@ def aggregate_mtp_delay_runs(
                 (
                     int(run.curve[index]["correct"])
                     / int(run.curve[index]["count"])
-                    if int(run.curve[index]["count"])
-                    else 0.0
                 )
                 for run in condition_runs
+                if int(run.curve[index]["count"])
             ]
+            seed_accuracy_std = None
+            if len(seed_accuracies) == 1:
+                seed_accuracy_std = 0.0
+            elif len(seed_accuracies) > 1:
+                seed_accuracy_std = stdev(seed_accuracies)
             curve.append(
                 {
                     "label": label,
                     "correct": correct,
                     "count": count,
                     "accuracy": correct / count if count else 0.0,
-                    "seed_accuracy_mean": mean(seed_accuracies),
-                    "seed_accuracy_std": (
-                        stdev(seed_accuracies) if len(seed_accuracies) > 1 else 0.0
+                    "contributing_seed_count": len(seed_accuracies),
+                    "seed_accuracy_mean": (
+                        mean(seed_accuracies) if seed_accuracies else None
                     ),
+                    "seed_accuracy_std": seed_accuracy_std,
                 }
             )
         summaries.append(

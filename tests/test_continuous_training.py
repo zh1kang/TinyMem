@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from tinymem.data.babi import parse_babi_lines
@@ -497,6 +498,30 @@ def test_continuous_training_updates_mtp_heads() -> None:
 
     assert len(losses) == 3
     assert not torch.equal(decoder.mtp_heads.heads[0].weight, before)
+
+
+def test_continuous_mtp_training_rejects_short_examples_before_sampling() -> None:
+    decoder = make_mtp_decoder(8)
+    optimizer = torch.optim.AdamW(decoder.parameters())
+    example = EncodedQAExample(
+        input_ids=(1, 2, 3, 4),
+        answer_id=4,
+        source_example_id="short",
+    )
+
+    with pytest.raises(ValueError, match="longer than the maximum horizon"):
+        train_continuous_answer_supervision(
+            decoder,
+            optimizer,
+            [example],
+            steps=1,
+            batch_size=1,
+            gradient_clip_norm=1.0,
+            pad_id=0,
+            device="cpu",
+            seed=1,
+            mtp_loss_weight=0.2,
+        )
 
 
 def test_discrete_training_anneals_temperature_and_uses_codes() -> None:

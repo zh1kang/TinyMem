@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -83,7 +84,14 @@ def main() -> None:
         curve = condition["curve"]
         axis.plot(
             [str(bucket["label"]) for bucket in curve],
-            [float(bucket["seed_accuracy_mean"]) for bucket in curve],
+            [
+                (
+                    float(bucket["seed_accuracy_mean"])
+                    if bucket["seed_accuracy_mean"] is not None
+                    else math.nan
+                )
+                for bucket in curve
+            ],
             marker="o",
             label=str(condition["condition"]),
         )

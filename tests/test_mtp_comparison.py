@@ -61,3 +61,24 @@ def test_load_mtp_delay_run_accepts_explicit_seed_for_older_results(
     run = load_mtp_delay_run(path, condition="base_mtp4", seed_override=7)
 
     assert run.seed == 7
+
+
+def test_aggregate_excludes_empty_seed_buckets(tmp_path: Path) -> None:
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    write_result(first, seed=1, correct=4)
+    write_result(second, seed=2, correct=6)
+    document = json.loads(second.read_text(encoding="utf-8"))
+    document["evaluation"]["curve"][0].update(correct=0, count=0)
+    second.write_text(json.dumps(document), encoding="utf-8")
+
+    summary = aggregate_mtp_delay_runs(
+        [
+            load_mtp_delay_run(first, condition="fixed_mtp4"),
+            load_mtp_delay_run(second, condition="fixed_mtp4"),
+        ]
+    )[0]
+
+    assert summary["curve"][0]["contributing_seed_count"] == 1
+    assert summary["curve"][0]["seed_accuracy_mean"] == pytest.approx(0.4)
+    assert summary["curve"][0]["seed_accuracy_std"] == 0.0

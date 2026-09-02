@@ -588,6 +588,13 @@ def train_continuous_answer_supervision(
         raise ValueError("examples must be nonempty")
     if not all(isinstance(example, EncodedQAExample) for example in examples):
         raise TypeError("examples must contain EncodedQAExample values")
+    if mtp_loss_weight > 0:
+        assert decoder.mtp_heads is not None
+        maximum_horizon = max(decoder.mtp_heads.horizons)
+        if any(len(example.input_ids) <= maximum_horizon for example in examples):
+            raise ValueError(
+                "every MTP training example must be longer than the maximum horizon"
+            )
     if write_loss_weight > 0 and not all(
         example.segment_write_targets is not None for example in examples
     ):

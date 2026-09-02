@@ -182,6 +182,13 @@ def train_answer_supervision(
         raise ValueError("MTP heads must match the model width and vocabulary")
     if not examples:
         raise ValueError("examples must be nonempty")
+    if mtp_loss_weight > 0:
+        assert mtp_heads is not None
+        maximum_horizon = max(mtp_heads.horizons)
+        if any(len(example.input_ids) <= maximum_horizon for example in examples):
+            raise ValueError(
+                "every MTP training example must be longer than the maximum horizon"
+            )
 
     generator = torch.Generator().manual_seed(seed)
     losses: list[float] = []
