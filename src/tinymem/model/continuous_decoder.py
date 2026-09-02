@@ -17,6 +17,7 @@ from tinymem.memory.recurrent_memory import (
 from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.kv_cache import KVCache
 from tinymem.model.memory_input import AttentionMemory
+from tinymem.model.multi_token_prediction import MultiTokenPredictionHeads
 from tinymem.model.transformer import DecoderOnlyTransformer
 
 
@@ -29,6 +30,7 @@ class SegmentedContinuousOutput:
     """Hold logits and the final explicit segmented-memory state."""
 
     logits: torch.Tensor
+    mtp_logits: dict[int, torch.Tensor] | None
     memory: torch.Tensor
     memory_valid: torch.Tensor
     memory_positions: torch.Tensor
@@ -59,6 +61,7 @@ class SegmentedContinuousDecoder(nn.Module):
         segment_length: int,
         write_gate: TokenSegmentWriteGate | None = None,
         write_controller: AdaptiveWriteController | None = None,
+        mtp_heads: MultiTokenPredictionHeads | None = None,
         memory_position_mode: str = "absolute",
     ) -> None:
         super().__init__()
@@ -95,6 +98,16 @@ class SegmentedContinuousDecoder(nn.Module):
             )
         if write_gate is not None and write_controller is not None:
             raise ValueError("write_gate and write_controller are mutually exclusive")
+        if mtp_heads is not None and not isinstance(
+            mtp_heads,
+            MultiTokenPredictionHeads,
+        ):
+            raise TypeError("mtp_heads must be MultiTokenPredictionHeads or None")
+        if mtp_heads is not None and (
+            mtp_heads.model_width != model.config.d_model
+            or mtp_heads.vocab_size != model.config.vocab_size
+        ):
+            raise ValueError("MTP heads must match the model width and vocabulary")
         if write_gate is not None and not isinstance(
             bank,
             GatedRecurrentMemoryBank,
@@ -130,6 +143,7 @@ class SegmentedContinuousDecoder(nn.Module):
         self.segment_length = int(segment_length)
         self.write_gate = write_gate
         self.write_controller = write_controller
+        self.mtp_heads = mtp_heads
         self.memory_position_mode = memory_position_mode
 
     def _empty_memory(
@@ -330,6 +344,11 @@ class SegmentedContinuousDecoder(nn.Module):
             dtype=self.model.token_embedding.weight.dtype,
         )
         segment_logits = []
+        segment_mtp_logits = (
+            {horizon: [] for horizon in self.mtp_heads.horizons}
+            if self.mtp_heads is not None
+            else None
+        )
         segment_writes = []
         segment_write_logits = []
         controller_action_logits = []
@@ -408,6 +427,10 @@ class SegmentedContinuousDecoder(nn.Module):
             )
             current_logits = self.model.lm_head(hidden_states)
             segment_logits.append(current_logits)
+            if self.mtp_heads is not None:
+                assert segment_mtp_logits is not None
+                for horizon, logits in self.mtp_heads(hidden_states).items():
+                    segment_mtp_logits[horizon].append(logits)
 
             discrete_output = None
             if discrete_compressor is None:
@@ -521,6 +544,14 @@ class SegmentedContinuousDecoder(nn.Module):
 
         return SegmentedContinuousOutput(
             logits=torch.cat(segment_logits, dim=1),
+            mtp_logits=(
+                {
+                    horizon: torch.cat(logits, dim=1)
+                    for horizon, logits in segment_mtp_logits.items()
+                }
+                if segment_mtp_logits is not None
+                else None
+            ),
             memory=memory,
             memory_valid=memory_valid,
             memory_positions=memory_positions,

@@ -16,6 +16,7 @@ from tinymem.memory.recurrent_memory import (
 )
 from tinymem.model.config import ModelConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
+from tinymem.model.multi_token_prediction import MultiTokenPredictionHeads
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.continuous import (
     collate_segmented_answer_supervision,
@@ -188,6 +189,24 @@ def make_adaptive_decoder(vocab_size: int) -> SegmentedContinuousDecoder:
         GatedRecurrentMemoryBank(capacity=2, model_width=8),
         segment_length=2,
         write_controller=AdaptiveWriteController(8, temperature=2.0),
+    )
+
+
+def make_mtp_decoder(vocab_size: int) -> SegmentedContinuousDecoder:
+    config = ModelConfig(
+        vocab_size=vocab_size,
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    return SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MeanPoolMemoryCompressor(config.d_model),
+        RecurrentMemoryBank(capacity=2, model_width=config.d_model),
+        segment_length=2,
+        mtp_heads=MultiTokenPredictionHeads(8, vocab_size, (2, 3, 4)),
     )
 
 
@@ -454,6 +473,30 @@ def test_continuous_training_updates_the_compressor() -> None:
     assert len(losses) == 3
     assert all(torch.isfinite(torch.tensor(losses)))
     assert not torch.equal(decoder.compressor.projection.weight, before)
+
+
+def test_continuous_training_updates_mtp_heads() -> None:
+    vocabulary, examples = make_examples()
+    decoder = make_mtp_decoder(len(vocabulary))
+    assert decoder.mtp_heads is not None
+    optimizer = torch.optim.AdamW(decoder.parameters(), lr=0.01)
+    before = decoder.mtp_heads.heads[0].weight.detach().clone()
+
+    losses = train_continuous_answer_supervision(
+        decoder,
+        optimizer,
+        examples,
+        steps=3,
+        batch_size=2,
+        gradient_clip_norm=1.0,
+        pad_id=vocabulary.token_to_id["<pad>"],
+        device="cpu",
+        seed=5,
+        mtp_loss_weight=0.2,
+    )
+
+    assert len(losses) == 3
+    assert not torch.equal(decoder.mtp_heads.heads[0].weight, before)
 
 
 def test_discrete_training_anneals_temperature_and_uses_codes() -> None:

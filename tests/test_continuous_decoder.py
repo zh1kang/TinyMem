@@ -18,6 +18,7 @@ from tinymem.model.config import ModelConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.kv_cache import KVCache
 from tinymem.model.memory_input import AttentionMemory
+from tinymem.model.multi_token_prediction import MultiTokenPredictionHeads
 from tinymem.model.transformer import DecoderOnlyTransformer
 
 
@@ -72,6 +73,19 @@ def test_segmented_decoder_returns_logits_and_fixed_memory() -> None:
     assert output.code_assignments is None
     assert output.proposed_code_valid is None
     assert output.prequantized_codes is None
+    assert output.mtp_logits is None
+
+
+def test_segmented_decoder_concatenates_mtp_logits_across_segments() -> None:
+    decoder = make_decoder(segment_length=2, capacity=2)
+    decoder.mtp_heads = MultiTokenPredictionHeads(8, 16, (2, 3, 4))
+    input_ids = torch.tensor([[1, 2, 3, 4, 5]])
+
+    output = decoder(input_ids, torch.ones_like(input_ids, dtype=torch.bool))
+
+    assert output.mtp_logits is not None
+    assert tuple(output.mtp_logits) == (2, 3, 4)
+    assert all(logits.shape == (1, 5, 16) for logits in output.mtp_logits.values())
 
 
 def test_segmented_decoder_stores_discrete_codes_at_evaluation() -> None:

@@ -24,6 +24,7 @@ from tinymem.training.discrete import (
     codebook_usage_loss,
 )
 from tinymem.training.losses import next_token_cross_entropy
+from tinymem.training.multi_token_prediction import multi_token_cross_entropy
 
 
 def qa1_requires_cross_segment_memory(
@@ -486,6 +487,7 @@ def train_continuous_answer_supervision(
     temperature_step_offset: int = 0,
     write_cost_weight: float = 0.0,
     controller_temperature_schedule: GumbelTemperatureSchedule | None = None,
+    mtp_loss_weight: float = 0.0,
 ) -> list[float]:
     """Train a segmented decoder and return one finite loss per step."""
     if not isinstance(decoder, SegmentedContinuousDecoder):
@@ -531,6 +533,15 @@ def train_continuous_answer_supervision(
         raise TypeError("write_cost_weight must be a real number")
     if write_cost_weight < 0:
         raise ValueError("write_cost_weight must be nonnegative")
+    if isinstance(mtp_loss_weight, bool) or not isinstance(
+        mtp_loss_weight,
+        Real,
+    ):
+        raise TypeError("mtp_loss_weight must be a real number")
+    if mtp_loss_weight < 0:
+        raise ValueError("mtp_loss_weight must be nonnegative")
+    if mtp_loss_weight > 0 and decoder.mtp_heads is None:
+        raise ValueError("positive MTP loss requires MTP heads")
     if temperature_schedule is not None and not isinstance(
         temperature_schedule,
         GumbelTemperatureSchedule,
@@ -614,6 +625,14 @@ def train_continuous_answer_supervision(
         optimizer.zero_grad(set_to_none=True)
         output = decoder(input_ids, token_valid)
         loss = next_token_cross_entropy(output.logits, target_ids)
+        if mtp_loss_weight > 0:
+            if output.mtp_logits is None:
+                raise ValueError("positive MTP loss requires MTP logits")
+            loss = loss + mtp_loss_weight * multi_token_cross_entropy(
+                output.mtp_logits,
+                input_ids,
+                token_valid,
+            ).total
         if codebook_usage_loss_weight > 0:
             if (
                 output.code_assignments is None
