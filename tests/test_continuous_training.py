@@ -2,6 +2,7 @@ import torch
 
 from tinymem.data.babi import parse_babi_lines
 from tinymem.data.babilong import parse_babilong_records
+from tinymem.data.correction_deletion import generate_update_examples
 from tinymem.data.vocabulary import ControlledVocabulary
 from tinymem.memory.continuous import (
     MeanPoolMemoryCompressor,
@@ -22,6 +23,7 @@ from tinymem.training.continuous import (
     encode_qa_with_evidence_write_targets,
     encode_qa_with_token_distractor,
     encode_qa_with_token_distractors,
+    encode_update_with_write_targets,
     qa1_requires_cross_segment_memory,
     train_continuous_answer_supervision,
 )
@@ -52,6 +54,37 @@ def make_examples() -> tuple[ControlledVocabulary, list[EncodedQAExample]]:
         encode_qa_example(example, vocabulary)
         for example in examples
     ]
+
+
+def test_encode_update_labels_fact_correction_and_deletion_segments() -> None:
+    update = generate_update_examples(
+        split="test",
+        count=1,
+        deletion_rate=1.0,
+        correction_counts=(1,),
+        query_delay=2,
+        distractor_count=2,
+    )[0].example
+    vocabulary = build_qa_vocabulary([update])
+
+    encoded = encode_update_with_write_targets(
+        update,
+        vocabulary,
+        segment_length=4,
+    )
+
+    assert encoded.segment_write_targets is not None
+    assert encoded.segment_event_types is not None
+    assert len(encoded.segment_write_targets) == len(encoded.segment_event_types)
+    assert any("set" in labels for labels in encoded.segment_event_types)
+    assert any("correction" in labels for labels in encoded.segment_event_types)
+    assert any("delete" in labels for labels in encoded.segment_event_types)
+    assert any("background" in labels for labels in encoded.segment_event_types)
+    assert all(
+        encoded.segment_write_targets[index]
+        for index, labels in enumerate(encoded.segment_event_types)
+        if {"set", "correction", "delete"}.intersection(labels)
+    )
 
 
 def make_decoder(vocab_size: int) -> SegmentedContinuousDecoder:

@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tinymem.data.babi import parse_babi_lines
+from tinymem.data.correction_deletion import generate_update_examples
 from tinymem.evaluation.controller import (
     evaluate_controller_policies,
     matched_random_write_mask,
@@ -19,6 +20,7 @@ from tinymem.training.controlled_qa import (
     build_qa_vocabulary,
     encode_qa_example,
 )
+from tinymem.training.continuous import encode_update_with_write_targets
 
 
 def make_fixture() -> tuple[SegmentedContinuousDecoder, list, int]:
@@ -116,17 +118,75 @@ def test_controller_comparison_covers_all_required_policies() -> None:
     assert set(indexed) == {
         "periodic",
         "random_matched",
-        "surprise_matched",
+        "surprise_threshold",
         "learned",
         "oracle",
     }
     assert indexed["random_matched"].writes == indexed["learned"].writes
-    assert indexed["surprise_matched"].writes == indexed["learned"].writes
+    assert indexed["surprise_threshold"].writes == indexed["learned"].writes
+    assert comparison.surprise_threshold is not None
     assert len(comparison.traces) == len(examples)
     assert all(trace.surprises for trace in comparison.traces)
+    assert all(trace.event_types for trace in comparison.traces)
     assert all(result.tokens > 0 for result in comparison.policies)
     document = comparison.to_dict()
     assert "exit_criteria_met" in document
+    assert not comparison.responds_to_corrections
+
+
+def test_controller_comparison_reports_update_event_write_rates() -> None:
+    updates = [
+        item.example
+        for item in generate_update_examples(
+            split="validation",
+            count=2,
+            deletion_rate=1.0,
+            correction_counts=(1,),
+            query_delay=1,
+            distractor_count=1,
+        )
+    ]
+    vocabulary = build_qa_vocabulary(updates)
+    encoded = [
+        encode_update_with_write_targets(
+            example,
+            vocabulary,
+            segment_length=4,
+        )
+        for example in updates
+    ]
+    config = ModelConfig(
+        vocab_size=len(vocabulary),
+        d_model=8,
+        n_layers=1,
+        n_heads=2,
+        d_ff=16,
+        max_local_tokens=4,
+    )
+    decoder = SegmentedContinuousDecoder(
+        DecoderOnlyTransformer(config),
+        MultiSlotAttentionMemoryCompressor(8, summary_slots=1),
+        GatedRecurrentMemoryBank(capacity=2, model_width=8),
+        segment_length=4,
+        write_controller=AdaptiveWriteController(8),
+    )
+
+    comparison = evaluate_controller_policies(
+        decoder,
+        encoded,
+        batch_size=2,
+        pad_id=vocabulary.token_to_id["<pad>"],
+        device="cpu",
+        periodic_interval=2,
+        random_seed=7,
+    )
+
+    assert comparison.event_counts["set"] > 0
+    assert comparison.event_counts["correction"] > 0
+    assert comparison.event_counts["delete"] > 0
+    assert comparison.event_counts["background"] > 0
+    assert set(comparison.event_write_rates) == set(comparison.event_counts)
+    assert "event_types" in comparison.traces[0].to_dict()["events"][0]
 
 
 @pytest.mark.parametrize("writes", [-1, 6])

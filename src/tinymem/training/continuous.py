@@ -148,6 +148,82 @@ def encode_qa_with_evidence_write_targets(
     )
 
 
+def encode_update_with_write_targets(
+    example: ReasoningExample,
+    vocabulary: ControlledVocabulary,
+    *,
+    segment_length: int,
+) -> EncodedQAExample:
+    """Encode one update episode with operation-level write labels."""
+    if not isinstance(example, ReasoningExample):
+        raise TypeError("example must be a ReasoningExample")
+    if example.task_id != "correction_deletion":
+        raise ValueError("update encoding requires correction_deletion data")
+    if not isinstance(vocabulary, ControlledVocabulary):
+        raise TypeError("vocabulary must be a ControlledVocabulary")
+    if isinstance(segment_length, bool) or not isinstance(segment_length, int):
+        raise TypeError("segment_length must be an integer")
+    if segment_length <= 0:
+        raise ValueError("segment_length must be positive")
+
+    if not example.question.startswith("QUERY ") or not example.question.endswith("?"):
+        raise ValueError("invalid update question")
+    query = example.question.removeprefix("QUERY ").removesuffix("?").split()
+    if len(query) != 2:
+        raise ValueError("update question must identify one entity and attribute")
+    query_key = tuple(query)
+    prompt_ids = tuple(vocabulary.encode(format_qa_prompt(example), add_bos=True))
+    answer_ids = vocabulary.encode(example.answer)
+    if len(answer_ids) != 1:
+        raise ValueError("controlled answer must encode to exactly one token")
+    input_ids = (*prompt_ids, answer_ids[0])
+    segment_count = (len(input_ids) + segment_length - 1) // segment_length
+    targets = [False] * segment_count
+    event_types: list[set[str]] = [set() for _ in range(segment_count)]
+
+    offset = 0
+    for line in example.context.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        parts = content.removesuffix(".").split()
+        if not parts:
+            raise ValueError("update context must contain nonempty operations")
+        operation = parts[0].lower()
+        start = 1 + len(vocabulary.encode(example.context[:offset]))
+        end = start + len(vocabulary.encode(content))
+        if end <= start or list(prompt_ids[start:end]) != vocabulary.encode(content):
+            raise ValueError("update operation does not align with prompt tokens")
+        is_relevant = (
+            operation in {"set", "correct", "delete"}
+            and len(parts) >= 3
+            and tuple(parts[1:3]) == query_key
+        )
+        label = (
+            "correction"
+            if operation == "correct"
+            else operation
+            if is_relevant
+            else "background"
+        )
+        for segment in range(
+            start // segment_length,
+            (end - 1) // segment_length + 1,
+        ):
+            event_types[segment].add(label)
+            targets[segment] = targets[segment] or is_relevant
+        offset += len(line)
+
+    return EncodedQAExample(
+        input_ids=input_ids,
+        answer_id=answer_ids[0],
+        source_example_id=example.source_example_id,
+        segment_write_targets=tuple(targets),
+        segment_event_types=tuple(
+            tuple(sorted(labels)) if labels else ("background",)
+            for labels in event_types
+        ),
+    )
+
+
 def collate_segmented_answer_supervision(
     examples: Sequence[EncodedQAExample],
     *,
@@ -531,14 +607,14 @@ def train_continuous_answer_supervision(
             )
         if write_cost_weight > 0:
             if (
-                output.controller_assignments is None
+                output.controller_probabilities is None
                 or output.controller_valid is None
             ):
                 raise ValueError(
-                    "write cost requires adaptive controller assignments"
+                    "write cost requires adaptive controller probabilities"
                 )
             loss = loss + write_cost_weight * controller_write_cost(
-                output.controller_assignments,
+                output.controller_probabilities,
                 output.controller_valid,
             )
         if write_loss_weight > 0:

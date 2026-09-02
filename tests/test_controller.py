@@ -81,11 +81,11 @@ def test_controller_initially_prefers_write_for_valid_rows() -> None:
     )
 
 
-def test_controller_write_cost_counts_only_valid_hard_writes() -> None:
-    assignments = torch.tensor(
+def test_controller_write_cost_averages_only_valid_write_probabilities() -> None:
+    probabilities = torch.tensor(
         [
-            [[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]],
-            [[0.0, 1.0], [1.0, 0.0], [0.0, 1.0]],
+            [[0.8, 0.2], [0.3, 0.7], [0.0, 1.0]],
+            [[0.1, 0.9], [0.6, 0.4], [0.0, 1.0]],
         ],
         requires_grad=True,
     )
@@ -93,12 +93,12 @@ def test_controller_write_cost_counts_only_valid_hard_writes() -> None:
         [[True, True, False], [True, True, False]],
     )
 
-    cost = controller_write_cost(assignments, valid)
+    cost = controller_write_cost(probabilities, valid)
     cost.backward()
 
-    assert float(cost.detach()) == pytest.approx(0.5)
-    assert assignments.grad is not None
-    assert torch.count_nonzero(assignments.grad[:, :, WRITE_ACTION]) == 4
+    assert float(cost.detach()) == pytest.approx(0.55)
+    assert probabilities.grad is not None
+    assert torch.count_nonzero(probabilities.grad[:, :, WRITE_ACTION]) == 4
 
 
 def test_controller_temperature_is_checkpointed() -> None:

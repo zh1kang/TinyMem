@@ -27,6 +27,7 @@ class ControllerEventTrace:
     write_probabilities: tuple[float, ...]
     learned_writes: tuple[bool, ...]
     relevant_segments: tuple[bool, ...]
+    event_types: tuple[tuple[str, ...], ...]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -38,13 +39,21 @@ class ControllerEventTrace:
                     "write_probability": probability,
                     "learned_write": write,
                     "relevant": relevant,
+                    "event_types": list(event_types),
                 }
-                for index, (surprise, probability, write, relevant) in enumerate(
+                for index, (
+                    surprise,
+                    probability,
+                    write,
+                    relevant,
+                    event_types,
+                ) in enumerate(
                     zip(
                         self.surprises,
                         self.write_probabilities,
                         self.learned_writes,
                         self.relevant_segments,
+                        self.event_types,
                         strict=True,
                     )
                 )
@@ -100,6 +109,9 @@ class ControllerComparison:
     learned_vs_random: PairedAccuracyResult
     relevant_write_rate: float
     background_write_rate: float
+    event_write_rates: dict[str, float]
+    event_counts: dict[str, int]
+    surprise_threshold: float | None
     traces: tuple[ControllerEventTrace, ...]
 
     @property
@@ -112,8 +124,19 @@ class ControllerComparison:
         return self.relevant_write_rate > self.background_write_rate
 
     @property
+    def responds_to_corrections(self) -> bool:
+        return (
+            self.event_counts.get("correction", 0) > 0
+            and self.event_write_rates["correction"] > self.background_write_rate
+        )
+
+    @property
     def exit_criteria_met(self) -> bool:
-        return self.learned_beats_random and self.responds_to_relevance
+        return (
+            self.learned_beats_random
+            and self.responds_to_relevance
+            and self.responds_to_corrections
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -121,8 +144,12 @@ class ControllerComparison:
             "learned_vs_random": self.learned_vs_random.to_dict(),
             "relevant_write_rate": self.relevant_write_rate,
             "background_write_rate": self.background_write_rate,
+            "event_write_rates": self.event_write_rates,
+            "event_counts": self.event_counts,
+            "surprise_threshold": self.surprise_threshold,
             "learned_beats_random": self.learned_beats_random,
             "responds_to_relevance": self.responds_to_relevance,
+            "responds_to_corrections": self.responds_to_corrections,
             "exit_criteria_met": self.exit_criteria_met,
         }
 
@@ -276,6 +303,16 @@ def _collect_controller_signals(
                 ].cpu()
                 row_valid = output.controller_valid[row, :count].cpu()
                 target_tensor = torch.tensor(targets, dtype=torch.bool)
+                event_types = example.segment_event_types
+                if event_types is None:
+                    event_types = tuple(
+                        ("relevant_fact",) if target else ("background",)
+                        for target in targets
+                    )
+                if len(event_types) != count:
+                    raise ValueError(
+                        "segment event types must match the encoded sequence"
+                    )
                 learned[destination, :count] = row_writes
                 surprise[destination, :count] = row_surprise
                 valid[destination, :count] = row_valid
@@ -291,6 +328,7 @@ def _collect_controller_signals(
                         relevant_segments=tuple(
                             bool(value) for value in target_tensor
                         ),
+                        event_types=event_types,
                     )
                 )
     finally:
@@ -373,6 +411,16 @@ def evaluate_controller_policies(
         device=device,
     )
     learned_writes = int(signals.learned.sum())
+    surprise_mask = matched_surprise_write_mask(
+        signals.surprise,
+        signals.valid,
+        writes=learned_writes,
+    )
+    surprise_threshold = (
+        float(signals.surprise[surprise_mask].min())
+        if learned_writes
+        else None
+    )
     masks = (
         ("periodic", periodic_write_mask(
             signals.valid,
@@ -383,11 +431,7 @@ def evaluate_controller_policies(
             writes=learned_writes,
             seed=random_seed,
         )),
-        ("surprise_matched", matched_surprise_write_mask(
-            signals.surprise,
-            signals.valid,
-            writes=learned_writes,
-        )),
+        ("surprise_threshold", surprise_mask),
         ("learned", signals.learned),
         ("oracle", signals.relevant & signals.valid),
     )
@@ -418,6 +462,21 @@ def evaluate_controller_policies(
         if background_count
         else 0.0
     )
+    event_counts: dict[str, int] = {}
+    event_writes: dict[str, int] = {}
+    for trace in signals.traces:
+        for wrote, labels in zip(
+            trace.learned_writes,
+            trace.event_types,
+            strict=True,
+        ):
+            for label in labels:
+                event_counts[label] = event_counts.get(label, 0) + 1
+                event_writes[label] = event_writes.get(label, 0) + int(wrote)
+    event_write_rates = {
+        label: event_writes[label] / count
+        for label, count in event_counts.items()
+    }
     return ControllerComparison(
         policies=policies,
         learned_vs_random=paired_accuracy_test(
@@ -427,5 +486,8 @@ def evaluate_controller_policies(
         ),
         relevant_write_rate=relevant_write_rate,
         background_write_rate=background_write_rate,
+        event_write_rates=event_write_rates,
+        event_counts=event_counts,
+        surprise_threshold=surprise_threshold,
         traces=signals.traces,
     )
