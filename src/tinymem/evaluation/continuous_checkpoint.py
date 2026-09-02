@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 
 from tinymem.data.vocabulary import SPECIAL_TOKENS, ControlledVocabulary
+from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.continuous import MultiSlotAttentionMemoryCompressor
 from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.memory.recurrent_memory import GatedRecurrentMemoryBank
@@ -24,6 +25,12 @@ TOKEN_GATED_MULTISLOT_ARCHITECTURE = (
 )
 DISCRETE_TOKEN_GATED_ARCHITECTURE = (
     "segmented_discrete_gumbel_codebook_token_gated_update"
+)
+ADAPTIVE_MULTISLOT_ARCHITECTURE = (
+    "segmented_continuous_multislot_attention_pool_adaptive_gated_update"
+)
+ADAPTIVE_DISCRETE_ARCHITECTURE = (
+    "segmented_discrete_gumbel_codebook_adaptive_gated_update"
 )
 
 
@@ -72,6 +79,8 @@ def load_continuous_checkpoint(
         GATED_MULTISLOT_ARCHITECTURE,
         TOKEN_GATED_MULTISLOT_ARCHITECTURE,
         DISCRETE_TOKEN_GATED_ARCHITECTURE,
+        ADAPTIVE_MULTISLOT_ARCHITECTURE,
+        ADAPTIVE_DISCRETE_ARCHITECTURE,
     ):
         raise ValueError(
             "unsupported continuous checkpoint architecture: "
@@ -104,7 +113,14 @@ def load_continuous_checkpoint(
     state = payload.get("model_state")
     if not isinstance(state, dict):
         raise ValueError("continuous checkpoint must contain model state")
-    is_discrete = architecture == DISCRETE_TOKEN_GATED_ARCHITECTURE
+    is_discrete = architecture in (
+        DISCRETE_TOKEN_GATED_ARCHITECTURE,
+        ADAPTIVE_DISCRETE_ARCHITECTURE,
+    )
+    is_adaptive = architecture in (
+        ADAPTIVE_MULTISLOT_ARCHITECTURE,
+        ADAPTIVE_DISCRETE_ARCHITECTURE,
+    )
     queries = state.get(
         "compressor.summarizer.queries"
         if is_discrete
@@ -130,6 +146,28 @@ def load_continuous_checkpoint(
         ):
             raise ValueError("continuous checkpoint has invalid write gate patterns")
         write_gate_kernel_size = pattern_weight.shape[2]
+
+    controller_hidden_width = config.model.d_model
+    if is_adaptive:
+        controller_input_weight = state.get(
+            "write_controller.input_projection.weight"
+        )
+        controller_action_weight = state.get(
+            "write_controller.action_projection.weight"
+        )
+        if (
+            not isinstance(controller_input_weight, torch.Tensor)
+            or controller_input_weight.ndim != 2
+            or controller_input_weight.shape[1]
+            != 2 * config.model.d_model + 1
+            or not isinstance(controller_action_weight, torch.Tensor)
+            or controller_action_weight.shape
+            != (2, controller_input_weight.shape[0])
+        ):
+            raise ValueError(
+                "continuous checkpoint has an invalid adaptive controller"
+            )
+        controller_hidden_width = controller_input_weight.shape[0]
 
     if is_discrete:
         codebook_weight = state.get("compressor.codebook.embedding.weight")
@@ -170,6 +208,14 @@ def load_continuous_checkpoint(
                 TOKEN_GATED_MULTISLOT_ARCHITECTURE,
                 DISCRETE_TOKEN_GATED_ARCHITECTURE,
             )
+            else None
+        ),
+        write_controller=(
+            AdaptiveWriteController(
+                config.model.d_model,
+                hidden_width=controller_hidden_width,
+            )
+            if is_adaptive
             else None
         ),
         memory_position_mode=memory_position_mode,

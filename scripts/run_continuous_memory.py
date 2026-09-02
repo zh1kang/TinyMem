@@ -31,10 +31,14 @@ from tinymem.evaluation.codebook import (
     evaluate_codebook_diagnostics,
 )
 from tinymem.evaluation.continuous_checkpoint import (
+    ADAPTIVE_DISCRETE_ARCHITECTURE,
+    ADAPTIVE_MULTISLOT_ARCHITECTURE,
     DISCRETE_TOKEN_GATED_ARCHITECTURE,
     GATED_MULTISLOT_ARCHITECTURE,
     TOKEN_GATED_MULTISLOT_ARCHITECTURE,
 )
+from tinymem.evaluation.controller import evaluate_controller_policies
+from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.continuous import (
     AttentionPoolMemoryCompressor,
     MeanPoolMemoryCompressor,
@@ -98,10 +102,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--write-gate",
-        choices=("summary", "token_conv"),
+        choices=("summary", "token_conv", "adaptive"),
         default="summary",
     )
     parser.add_argument("--write-gate-kernel-size", type=int, default=3)
+    parser.add_argument("--controller-hidden-width", type=int, default=0)
+    parser.add_argument("--controller-temperature-start", type=float, default=2.0)
+    parser.add_argument("--controller-temperature-end", type=float, default=0.5)
+    parser.add_argument("--controller-anneal-steps", type=int, default=2000)
+    parser.add_argument("--write-cost-weight", type=float, default=0.0)
+    parser.add_argument("--controller-periodic-interval", type=int, default=4)
+    parser.add_argument("--controller-random-seed", type=int, default=0)
     parser.add_argument(
         "--memory-position-mode",
         choices=("absolute", "virtual"),
@@ -221,6 +232,16 @@ def main() -> None:
         raise ValueError("Gumbel anneal steps must be positive")
     if args.codebook_usage_loss_weight < 0:
         raise ValueError("codebook usage loss weight must be nonnegative")
+    if args.controller_hidden_width < 0:
+        raise ValueError("controller hidden width must be nonnegative")
+    if args.controller_anneal_steps <= 0:
+        raise ValueError("controller anneal steps must be positive")
+    if args.write_cost_weight < 0:
+        raise ValueError("write cost weight must be nonnegative")
+    if args.controller_periodic_interval <= 0:
+        raise ValueError("controller periodic interval must be positive")
+    if args.controller_random_seed < 0:
+        raise ValueError("controller random seed must be nonnegative")
     if args.learning_rate <= 0 or args.weight_decay < 0:
         raise ValueError("learning rate must be positive and weight decay nonnegative")
     if args.gradient_clip_norm <= 0:
@@ -251,6 +272,15 @@ def main() -> None:
         raise ValueError("write loss requires gated memory updates")
     if args.write_gate == "token_conv" and args.memory_update != "gated":
         raise ValueError("token convolution write gate requires gated memory updates")
+    if args.write_gate == "adaptive" and args.memory_update != "gated":
+        raise ValueError("adaptive write controller requires gated memory updates")
+    if args.write_gate == "adaptive" and args.compressor not in (
+        "multislot_attention",
+        "discrete",
+    ):
+        raise ValueError(
+            "adaptive write controller requires multislot or discrete attention"
+        )
     if args.write_gate == "token_conv" and args.compressor not in (
         "multislot_attention",
         "discrete",
@@ -259,10 +289,11 @@ def main() -> None:
             "token convolution write gate requires multislot or discrete attention"
         )
     if args.compressor == "discrete" and (
-        args.memory_update != "gated" or args.write_gate != "token_conv"
+        args.memory_update != "gated"
+        or args.write_gate not in ("token_conv", "adaptive")
     ):
         raise ValueError(
-            "discrete memory requires gated updates and the token convolution gate"
+            "discrete memory requires gated updates and an external write decider"
         )
     if args.compressor != "discrete" and args.codebook_usage_loss_weight:
         raise ValueError(
@@ -275,6 +306,8 @@ def main() -> None:
         raise ValueError(
             "soft codebook evaluation requires the discrete compressor"
         )
+    if args.write_gate != "adaptive" and args.write_cost_weight:
+        raise ValueError("write cost requires the adaptive write controller")
     if (
         args.write_gate_kernel_size <= 0
         or args.write_gate_kernel_size % 2 == 0
@@ -313,6 +346,7 @@ def main() -> None:
         raise ValueError("segment length must not exceed the base local window")
 
     temperature_schedule = None
+    controller_temperature_schedule = None
     if args.compressor == "discrete":
         temperature_schedule = GumbelTemperatureSchedule(
             start=args.gumbel_temperature_start,
@@ -335,6 +369,22 @@ def main() -> None:
             model.config.d_model,
             summary_slots=args.summaries_per_segment,
         )
+    write_controller = None
+    if args.write_gate == "adaptive":
+        controller_temperature_schedule = GumbelTemperatureSchedule(
+            start=args.controller_temperature_start,
+            end=args.controller_temperature_end,
+            anneal_steps=args.controller_anneal_steps,
+        )
+        write_controller = AdaptiveWriteController(
+            model.config.d_model,
+            hidden_width=(
+                args.controller_hidden_width
+                if args.controller_hidden_width
+                else model.config.d_model
+            ),
+            temperature=args.controller_temperature_start,
+        )
     bank_type = (
         RecurrentMemoryBank
         if args.memory_update == "fifo"
@@ -356,6 +406,7 @@ def main() -> None:
             if args.write_gate == "token_conv"
             else None
         ),
+        write_controller=write_controller,
         memory_position_mode=args.memory_position_mode,
     ).to(device)
     optimizer = torch.optim.AdamW(
@@ -592,6 +643,16 @@ def main() -> None:
                     else 0.0
                 ),
                 temperature_schedule=temperature_schedule,
+                write_cost_weight=(
+                    args.write_cost_weight
+                    if args.write_gate == "adaptive"
+                    else 0.0
+                ),
+                controller_temperature_schedule=(
+                    controller_temperature_schedule
+                    if args.write_gate == "adaptive"
+                    else None
+                ),
             )
         )
     losses.extend(
@@ -613,6 +674,16 @@ def main() -> None:
             ),
             temperature_schedule=temperature_schedule,
             temperature_step_offset=args.memory_warmup_steps,
+            write_cost_weight=(
+                args.write_cost_weight
+                if args.write_gate == "adaptive"
+                else 0.0
+            ),
+            controller_temperature_schedule=(
+                controller_temperature_schedule
+                if args.write_gate == "adaptive"
+                else None
+            ),
         )
     )
 
@@ -650,6 +721,18 @@ def main() -> None:
             batch_size=args.eval_batch_size,
             pad_id=vocabulary.token_to_id["<pad>"],
             device=device,
+        )
+
+    controller_comparison = None
+    if args.write_gate == "adaptive" and delayed_validation_curriculum:
+        controller_comparison = evaluate_controller_policies(
+            decoder,
+            delayed_validation_curriculum,
+            batch_size=args.eval_batch_size,
+            pad_id=vocabulary.token_to_id["<pad>"],
+            device=device,
+            periodic_interval=args.controller_periodic_interval,
+            random_seed=args.controller_random_seed,
         )
 
     interventions = (
@@ -846,6 +929,25 @@ def main() -> None:
         "memory_update": args.memory_update,
         "write_gate": args.write_gate,
         "write_gate_kernel_size": args.write_gate_kernel_size,
+        "controller_hidden_width": (
+            decoder.write_controller.hidden_width
+            if isinstance(decoder.write_controller, AdaptiveWriteController)
+            else None
+        ),
+        "controller_temperature_start": args.controller_temperature_start,
+        "controller_temperature_end": args.controller_temperature_end,
+        "controller_anneal_steps": args.controller_anneal_steps,
+        "final_controller_temperature": (
+            decoder.write_controller.temperature
+            if isinstance(decoder.write_controller, AdaptiveWriteController)
+            else None
+        ),
+        "write_cost_weight": args.write_cost_weight,
+        "controller_comparison": (
+            controller_comparison.to_dict()
+            if controller_comparison is not None
+            else None
+        ),
         "memory_position_mode": args.memory_position_mode,
         "max_training_distractor_tokens": (
             args.max_training_distractor_tokens
@@ -956,6 +1058,14 @@ def main() -> None:
             ),
             encoding="utf-8",
         )
+    if controller_comparison is not None:
+        (run_directory / "controller_trace.jsonl").write_text(
+            "".join(
+                json.dumps(trace.to_dict(), sort_keys=True) + "\n"
+                for trace in controller_comparison.traces
+            ),
+            encoding="utf-8",
+        )
     save_checkpoint(
         run_directory / "checkpoint.pt",
         model=decoder,
@@ -965,8 +1075,13 @@ def main() -> None:
         extra={
             "vocabulary": list(vocabulary.id_to_token),
             "architecture": (
-                DISCRETE_TOKEN_GATED_ARCHITECTURE
+                ADAPTIVE_DISCRETE_ARCHITECTURE
                 if args.compressor == "discrete"
+                and args.write_gate == "adaptive"
+                else DISCRETE_TOKEN_GATED_ARCHITECTURE
+                if args.compressor == "discrete"
+                else ADAPTIVE_MULTISLOT_ARCHITECTURE
+                if args.write_gate == "adaptive"
                 else TOKEN_GATED_MULTISLOT_ARCHITECTURE
                 if args.write_gate == "token_conv"
                 else (
@@ -991,6 +1106,18 @@ def main() -> None:
             "gumbel_temperature_end": args.gumbel_temperature_end,
             "gumbel_anneal_steps": args.gumbel_anneal_steps,
             "codebook_usage_loss_weight": args.codebook_usage_loss_weight,
+            "controller_hidden_width": (
+                decoder.write_controller.hidden_width
+                if isinstance(
+                    decoder.write_controller,
+                    AdaptiveWriteController,
+                )
+                else None
+            ),
+            "controller_temperature_start": args.controller_temperature_start,
+            "controller_temperature_end": args.controller_temperature_end,
+            "controller_anneal_steps": args.controller_anneal_steps,
+            "write_cost_weight": args.write_cost_weight,
             "codebook_evaluation_mode": (
                 args.codebook_evaluation_mode
                 if args.compressor == "discrete"

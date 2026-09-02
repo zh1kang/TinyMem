@@ -4,11 +4,14 @@ import pytest
 
 from tinymem.data.vocabulary import ControlledVocabulary
 from tinymem.evaluation.continuous_checkpoint import (
+    ADAPTIVE_DISCRETE_ARCHITECTURE,
+    ADAPTIVE_MULTISLOT_ARCHITECTURE,
     DISCRETE_TOKEN_GATED_ARCHITECTURE,
     GATED_MULTISLOT_ARCHITECTURE,
     TOKEN_GATED_MULTISLOT_ARCHITECTURE,
     load_continuous_checkpoint,
 )
+from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.continuous import MultiSlotAttentionMemoryCompressor
 from tinymem.memory.discrete_compressor import DiscreteMemoryCompressor
 from tinymem.memory.recurrent_memory import GatedRecurrentMemoryBank
@@ -31,6 +34,7 @@ def write_checkpoint(
     write_threshold: float | None = None,
     memory_position_mode: str = "absolute",
     write_gate_kernel_size: int = 3,
+    controller_hidden_width: int = 6,
 ) -> ExperimentConfig:
     vocabulary = ControlledVocabulary([" ", "Mary", "kitchen"])
     config = ExperimentConfig(
@@ -56,7 +60,11 @@ def write_checkpoint(
             codebook_size=8,
             summary_slots=2,
         )
-        if architecture == DISCRETE_TOKEN_GATED_ARCHITECTURE
+        if architecture
+        in (
+            DISCRETE_TOKEN_GATED_ARCHITECTURE,
+            ADAPTIVE_DISCRETE_ARCHITECTURE,
+        )
         else MultiSlotAttentionMemoryCompressor(8, summary_slots=2)
     )
     decoder = SegmentedContinuousDecoder(
@@ -76,6 +84,19 @@ def write_checkpoint(
             in (
                 TOKEN_GATED_MULTISLOT_ARCHITECTURE,
                 DISCRETE_TOKEN_GATED_ARCHITECTURE,
+            )
+            else None
+        ),
+        write_controller=(
+            AdaptiveWriteController(
+                8,
+                hidden_width=controller_hidden_width,
+                temperature=0.4,
+            )
+            if architecture
+            in (
+                ADAPTIVE_MULTISLOT_ARCHITECTURE,
+                ADAPTIVE_DISCRETE_ARCHITECTURE,
             )
             else None
         ),
@@ -160,6 +181,33 @@ def test_load_continuous_checkpoint_reconstructs_discrete_codebook(
     assert loaded.decoder.bank.write_threshold == 0.75
     assert isinstance(loaded.decoder.write_gate, TokenSegmentWriteGate)
     assert loaded.decoder.write_gate.kernel_size == 5
+
+
+@pytest.mark.parametrize(
+    "architecture",
+    [ADAPTIVE_MULTISLOT_ARCHITECTURE, ADAPTIVE_DISCRETE_ARCHITECTURE],
+)
+def test_load_continuous_checkpoint_reconstructs_adaptive_controller(
+    tmp_path: Path,
+    architecture: str,
+) -> None:
+    path = tmp_path / "checkpoint.pt"
+    write_checkpoint(
+        path,
+        architecture=architecture,
+        controller_hidden_width=6,
+    )
+
+    loaded = load_continuous_checkpoint(path, device="cpu")
+
+    assert isinstance(loaded.decoder.write_controller, AdaptiveWriteController)
+    assert loaded.decoder.write_controller.hidden_width == 6
+    assert loaded.decoder.write_controller.temperature == pytest.approx(0.4)
+    assert loaded.decoder.write_gate is None
+    assert isinstance(loaded.decoder.compressor, (
+        MultiSlotAttentionMemoryCompressor,
+        DiscreteMemoryCompressor,
+    ))
 
 
 def test_load_continuous_checkpoint_rejects_unknown_architecture(
