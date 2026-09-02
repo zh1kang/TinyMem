@@ -86,6 +86,7 @@ class GumbelSoftmaxCodebook(nn.Module):
         """Select one code per valid slot and decode it to model width."""
         temperature = self._validate_inputs(logits, valid, temperature)
 
+        probabilities = torch.softmax(logits / temperature, dim=-1)
         if self.training:
             dtype_info = torch.finfo(logits.dtype)
             uniform = torch.rand_like(logits).clamp(
@@ -93,15 +94,15 @@ class GumbelSoftmaxCodebook(nn.Module):
                 max=1.0 - dtype_info.eps,
             )
             gumbel_noise = -torch.log(-torch.log(uniform))
-            probabilities = torch.softmax(
+            relaxed_assignments = torch.softmax(
                 (logits + gumbel_noise) / temperature,
                 dim=-1,
             )
         else:
-            probabilities = torch.softmax(logits / temperature, dim=-1)
+            relaxed_assignments = probabilities
 
         indices = (
-            probabilities.argmax(dim=-1)
+            relaxed_assignments.argmax(dim=-1)
             if self.training
             else logits.argmax(dim=-1)
         )
@@ -112,7 +113,11 @@ class GumbelSoftmaxCodebook(nn.Module):
         assignments = (
             hard_assignments
             if not self.training
-            else hard_assignments - probabilities.detach() + probabilities
+            else (
+                hard_assignments
+                - relaxed_assignments.detach()
+                + relaxed_assignments
+            )
         )
 
         expanded_valid = valid.unsqueeze(-1)

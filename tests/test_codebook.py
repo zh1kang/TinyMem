@@ -80,6 +80,19 @@ def test_lower_temperature_sharpens_evaluation_probabilities() -> None:
     assert cold.probabilities.max() > warm.probabilities.max()
 
 
+def test_training_probabilities_exclude_sampling_noise() -> None:
+    codebook = GumbelSoftmaxCodebook(model_width=2, codebook_size=3)
+    logits = torch.tensor([[[1.0, 2.0, 3.0]]])
+    valid = torch.ones(1, 1, dtype=torch.bool)
+
+    torch.manual_seed(1)
+    first = codebook(logits, valid, temperature=1.0)
+    torch.manual_seed(99)
+    second = codebook(logits, valid, temperature=1.0)
+
+    torch.testing.assert_close(first.probabilities, second.probabilities)
+
+
 def test_codebook_zeros_invalid_slots_and_marks_their_indices() -> None:
     codebook = GumbelSoftmaxCodebook(model_width=3, codebook_size=4)
     logits = torch.randn(2, 2, 4, requires_grad=True)
