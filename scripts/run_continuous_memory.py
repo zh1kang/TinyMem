@@ -38,6 +38,7 @@ from tinymem.evaluation.continuous_checkpoint import (
     TOKEN_GATED_MULTISLOT_ARCHITECTURE,
 )
 from tinymem.evaluation.controller import evaluate_controller_policies
+from tinymem.evaluation.multi_token_prediction import evaluate_continuous_mtp_loss
 from tinymem.memory.controller import AdaptiveWriteController
 from tinymem.memory.continuous import (
     AttentionPoolMemoryCompressor,
@@ -50,8 +51,9 @@ from tinymem.memory.recurrent_memory import (
     RecurrentMemoryBank,
 )
 from tinymem.memory.write_gate import TokenSegmentWriteGate
-from tinymem.model.config import ExperimentConfig
+from tinymem.model.config import ExperimentConfig, MTPConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
+from tinymem.model.multi_token_prediction import MultiTokenPredictionHeads
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.checkpointing import load_checkpoint, save_checkpoint
 from tinymem.training.continuous import (
@@ -140,6 +142,8 @@ def parse_args() -> argparse.Namespace:
         help="omit to use the maximum distributed training delay",
     )
     parser.add_argument("--write-loss-weight", type=float, default=0.0)
+    parser.add_argument("--mtp-horizons", type=int, nargs="*", default=())
+    parser.add_argument("--mtp-loss-weight", type=float, default=0.2)
     parser.add_argument(
         "--write-calibration-max-fpr",
         type=float,
@@ -216,6 +220,11 @@ def _load_base_checkpoint(
 
 def main() -> None:
     args = parse_args()
+    mtp_config = MTPConfig(
+        enabled=bool(args.mtp_horizons),
+        horizons=tuple(args.mtp_horizons) or (2, 3, 4),
+        loss_weight=args.mtp_loss_weight,
+    )
     if args.steps <= 0 or args.batch_size <= 0:
         raise ValueError("steps and training batch size must be positive")
     if args.memory_warmup_steps < 0:
@@ -407,6 +416,15 @@ def main() -> None:
             else None
         ),
         write_controller=write_controller,
+        mtp_heads=(
+            MultiTokenPredictionHeads(
+                model.config.d_model,
+                model.config.vocab_size,
+                mtp_config.horizons,
+            )
+            if mtp_config.enabled
+            else None
+        ),
         memory_position_mode=args.memory_position_mode,
     ).to(device)
     optimizer = torch.optim.AdamW(
@@ -624,6 +642,17 @@ def main() -> None:
                 eligible_index += 1
         memory_curriculum = delayed_training
 
+    auxiliary_loss_before = (
+        evaluate_continuous_mtp_loss(
+            decoder,
+            validation_curriculum,
+            batch_size=args.eval_batch_size,
+            pad_id=vocabulary.token_to_id["<pad>"],
+            device=device,
+        )
+        if mtp_config.enabled
+        else None
+    )
     losses = []
     if args.memory_warmup_steps:
         losses.extend(
@@ -652,6 +681,9 @@ def main() -> None:
                     controller_temperature_schedule
                     if args.write_gate == "adaptive"
                     else None
+                ),
+                mtp_loss_weight=(
+                    mtp_config.loss_weight if mtp_config.enabled else 0.0
                 ),
             )
         )
@@ -684,7 +716,21 @@ def main() -> None:
                 if args.write_gate == "adaptive"
                 else None
             ),
+            mtp_loss_weight=(
+                mtp_config.loss_weight if mtp_config.enabled else 0.0
+            ),
         )
+    )
+    auxiliary_loss_after = (
+        evaluate_continuous_mtp_loss(
+            decoder,
+            validation_curriculum,
+            batch_size=args.eval_batch_size,
+            pad_id=vocabulary.token_to_id["<pad>"],
+            device=device,
+        )
+        if mtp_config.enabled
+        else None
     )
 
     write_calibration = None
@@ -894,6 +940,7 @@ def main() -> None:
             warmup_steps=0,
             max_steps=args.steps + args.memory_warmup_steps,
         ),
+        mtp=mtp_config,
     )
     commit = current_git_commit(repository_root)
     run_directory = create_run_directory(
@@ -960,6 +1007,10 @@ def main() -> None:
             validation_distributed_distractor_tokens
         ),
         "write_loss_weight": args.write_loss_weight,
+        "mtp_horizons": list(mtp_config.horizons) if mtp_config.enabled else [],
+        "mtp_loss_weight": mtp_config.loss_weight if mtp_config.enabled else 0.0,
+        "auxiliary_loss_before": auxiliary_loss_before,
+        "auxiliary_loss_after": auxiliary_loss_after,
         "write_calibration": (
             write_calibration.to_dict()
             if write_calibration is not None
@@ -1100,6 +1151,9 @@ def main() -> None:
                 else None
             ),
             "memory_position_mode": args.memory_position_mode,
+            "mtp_horizons": (
+                list(mtp_config.horizons) if mtp_config.enabled else []
+            ),
             "write_gate_kernel_size": args.write_gate_kernel_size,
             "codebook_size": args.codebook_size,
             "gumbel_temperature_start": args.gumbel_temperature_start,

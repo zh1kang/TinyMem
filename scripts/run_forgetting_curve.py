@@ -16,13 +16,16 @@ from matplotlib import pyplot as plt
 from tinymem.data.babi import load_babi_file
 from tinymem.data.babilong import load_babilong_file
 from tinymem.evaluation.forgetting_curve import evaluate_local_forgetting_curve
+from tinymem.evaluation.multi_token_prediction import evaluate_base_mtp_loss
 from tinymem.model.config import (
     ExperimentConfig,
     MemoryConfig,
     ModelConfig,
+    MTPConfig,
     StreamConfig,
     TrainingConfig,
 )
+from tinymem.model.multi_token_prediction import MultiTokenPredictionHeads
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.checkpointing import save_checkpoint
 from tinymem.training.controlled_qa import (
@@ -54,6 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-heads", type=int, default=4)
     parser.add_argument("--d-ff", type=int, default=256)
     parser.add_argument("--local-window", type=int, default=128)
+    parser.add_argument("--mtp-horizons", type=int, nargs="*", default=())
+    parser.add_argument("--mtp-loss-weight", type=float, default=0.2)
     parser.add_argument(
         "--artifact-root",
         type=Path,
@@ -92,6 +97,11 @@ def plot_results(results: list[dict[str, object]], destination: Path) -> None:
 
 def main() -> None:
     args = parse_args()
+    mtp_config = MTPConfig(
+        enabled=bool(args.mtp_horizons),
+        horizons=tuple(args.mtp_horizons) or (2, 3, 4),
+        loss_weight=args.mtp_loss_weight,
+    )
     repository_root = Path(__file__).resolve().parents[1]
     device = select_device(args.device)
     seed_everything(args.seed)
@@ -143,12 +153,38 @@ def main() -> None:
             warmup_steps=0,
             max_steps=args.steps,
         ),
+        mtp=mtp_config,
     )
     model = DecoderOnlyTransformer(model_config).to(device)
+    mtp_heads = (
+        MultiTokenPredictionHeads(
+            model_config.d_model,
+            model_config.vocab_size,
+            mtp_config.horizons,
+        ).to(device)
+        if mtp_config.enabled
+        else None
+    )
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        (
+            (*model.parameters(), *mtp_heads.parameters())
+            if mtp_heads is not None
+            else model.parameters()
+        ),
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
+    )
+    auxiliary_loss_before = (
+        evaluate_base_mtp_loss(
+            model,
+            mtp_heads,
+            encoded_validation,
+            batch_size=args.batch_size,
+            pad_id=vocabulary.token_to_id["<pad>"],
+            device=device,
+        )
+        if mtp_heads is not None
+        else None
     )
     losses = train_answer_supervision(
         model,
@@ -160,6 +196,20 @@ def main() -> None:
         pad_id=vocabulary.token_to_id["<pad>"],
         device=device,
         seed=args.seed,
+        mtp_heads=mtp_heads,
+        mtp_loss_weight=(mtp_config.loss_weight if mtp_heads is not None else 0.0),
+    )
+    auxiliary_loss_after = (
+        evaluate_base_mtp_loss(
+            model,
+            mtp_heads,
+            encoded_validation,
+            batch_size=args.batch_size,
+            pad_id=vocabulary.token_to_id["<pad>"],
+            device=device,
+        )
+        if mtp_heads is not None
+        else None
     )
     validation_accuracy = answer_accuracy(
         model,
@@ -207,6 +257,10 @@ def main() -> None:
         "skipped_validation_examples": skipped_validation,
         "final_training_loss": losses[-1],
         "validation_accuracy": validation_accuracy,
+        "mtp_horizons": list(mtp_config.horizons) if mtp_heads is not None else [],
+        "mtp_loss_weight": mtp_config.loss_weight if mtp_heads is not None else 0.0,
+        "auxiliary_loss_before": auxiliary_loss_before,
+        "auxiliary_loss_after": auxiliary_loss_after,
         "curve": curve_records,
     }
     (run_directory / "results.json").write_text(
@@ -222,6 +276,12 @@ def main() -> None:
         extra={
             "vocabulary": list(vocabulary.id_to_token),
             "validation_accuracy": validation_accuracy,
+            "mtp_horizons": (
+                list(mtp_config.horizons) if mtp_heads is not None else []
+            ),
+            "mtp_head_state": (
+                mtp_heads.state_dict() if mtp_heads is not None else None
+            ),
         },
     )
     plot_results(curve_records, run_directory / "forgetting_curve.png")
