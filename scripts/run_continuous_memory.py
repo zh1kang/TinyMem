@@ -647,11 +647,7 @@ def main() -> None:
         )
 
     evaluations = []
-    if args.evaluation_scope == "all" and not validation_exit_criteria_met:
-        raise RuntimeError(
-            "validation memory utility must be positive before BABILong evaluation"
-        )
-    if args.evaluation_scope == "all":
+    if args.evaluation_scope == "all" and validation_exit_criteria_met:
         babilong_examples = []
         for context_length in ("1k", "2k", "4k", "8k"):
             babilong_examples.extend(
@@ -731,8 +727,13 @@ def main() -> None:
     result_document = {
         "status": (
             "development_single_seed"
-            if args.evaluation_scope == "all"
+            if evaluations
             else "development_validation"
+        ),
+        "evaluation_scope_requested": args.evaluation_scope,
+        "babilong_evaluation_skipped": (
+            args.evaluation_scope == "all"
+            and not validation_exit_criteria_met
         ),
         "task_id": "qa1",
         "device": str(device),
