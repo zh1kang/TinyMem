@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import matplotlib
@@ -328,10 +329,17 @@ def main() -> None:
         model=decoder,
         optimizer=optimizer,
         step=args.steps,
-        config=config,
+        config=replace(
+            config,
+            stream=replace(
+                config.stream,
+                segment_length=selected_window,
+            ),
+        ),
         extra={
             "architecture": "segmented_continuous_wikitext_byte_lm",
             "selected_window": selected_window,
+            "training_segment_length": args.segment_length,
             "tokenizer": "utf8_bytes_v1",
         },
     )

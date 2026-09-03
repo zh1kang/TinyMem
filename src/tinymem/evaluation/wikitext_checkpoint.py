@@ -53,6 +53,10 @@ def load_wikitext_checkpoint(
         raise ValueError("checkpoint vocabulary does not match the byte tokenizer")
     if not 0 < selected_window <= config.model.max_local_tokens:
         raise ValueError("checkpoint selected window is outside the local window")
+    if selected_window != config.stream.segment_length:
+        raise ValueError(
+            "checkpoint selected window does not match its stream configuration"
+        )
 
     decoder = SegmentedContinuousDecoder(
         DecoderOnlyTransformer(config.model),

@@ -2,6 +2,7 @@ import math
 
 import pytest
 import torch
+from torch.nn import functional as F
 
 from tinymem.data.longmemeval import (
     LongMemEvalExample,
@@ -123,6 +124,48 @@ def test_candidate_scoring_uses_prompt_next_token_logits() -> None:
     assert correct.first_byte_correct
     assert correct.greedy_prefix_bytes == 1
     assert math.isfinite(correct.byte_perplexity)
+
+
+def test_candidate_scoring_aligns_multiple_bytes_across_segments() -> None:
+    torch.manual_seed(11)
+    decoder = make_decoder()
+    tokenizer = ByteTokenizer()
+    state = empty_prompt_state(tokenizer)
+    candidate = "ABCDEFGHIJKLM"
+    targets = torch.tensor(tokenizer.encode(candidate), dtype=torch.long)
+
+    score = score_candidate_answer(
+        decoder,
+        tokenizer,
+        state,
+        candidate,
+        device="cpu",
+    )
+
+    sequential_logits = [state.next_logits]
+    for target_index in range(1, targets.numel()):
+        prefix = targets[:target_index].unsqueeze(0)
+        output = decoder(
+            prefix,
+            torch.ones_like(prefix, dtype=torch.bool),
+            initial_memory=state.memory,
+            position_offset=state.position,
+            update_memory=False,
+        )
+        sequential_logits.append(output.logits[:, -1])
+    expected_logits = torch.stack(sequential_logits, dim=1)
+    expected_nll = F.cross_entropy(
+        expected_logits.squeeze(0),
+        targets,
+        reduction="sum",
+    )
+    matches = expected_logits.argmax(dim=-1).squeeze(0).eq(targets)
+    mismatches = (~matches).nonzero(as_tuple=False)
+    expected_prefix = int(mismatches[0, 0]) if mismatches.numel() else len(candidate)
+
+    assert score.total_nll == pytest.approx(float(expected_nll.detach()))
+    assert score.first_byte_correct == bool(matches[0])
+    assert score.greedy_prefix_bytes == expected_prefix
 
 
 def test_diagnostics_return_all_condition_metrics_deterministically() -> None:

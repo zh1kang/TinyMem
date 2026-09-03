@@ -73,3 +73,19 @@ def test_load_wikitext_checkpoint_rejects_other_architectures(
 
     with pytest.raises(ValueError, match="not a WikiText"):
         load_wikitext_checkpoint(path, device="cpu")
+
+
+def test_load_wikitext_checkpoint_rejects_segment_metadata_mismatch(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "checkpoint.pt"
+    make_checkpoint(
+        path,
+        architecture="segmented_continuous_wikitext_byte_lm",
+    )
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    payload["extra"]["selected_window"] = 2
+    torch.save(payload, path)
+
+    with pytest.raises(ValueError, match="does not match"):
+        load_wikitext_checkpoint(path, device="cpu")
