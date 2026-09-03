@@ -70,6 +70,38 @@ class DecoderAnswerabilityResult:
         }
 
 
+def freeze_before_correction_write_mask(
+    examples: Sequence[EncodedQAExample],
+) -> torch.Tensor:
+    """Allow the initial set write and block later correction writes."""
+    if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
+        raise TypeError("examples must be a sequence")
+    if not examples:
+        raise ValueError("examples must be nonempty")
+    if not all(isinstance(example, EncodedQAExample) for example in examples):
+        raise TypeError("examples must contain EncodedQAExample values")
+    if any(example.segment_event_types is None for example in examples):
+        raise ValueError("every example must contain segment event labels")
+
+    max_segments = max(
+        len(example.segment_event_types or ()) for example in examples
+    )
+    forced_writes = torch.zeros(
+        len(examples),
+        max_segments,
+        dtype=torch.bool,
+    )
+    for row, example in enumerate(examples):
+        assert example.segment_event_types is not None
+        for segment, labels in enumerate(example.segment_event_types):
+            forced_writes[row, segment] = (
+                "set" in labels
+                and "correction" not in labels
+                and "delete" not in labels
+            )
+    return forced_writes
+
+
 def _validated_inputs(
     probabilities: torch.Tensor,
     correct: torch.Tensor,

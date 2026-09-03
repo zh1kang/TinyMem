@@ -4,6 +4,7 @@ import torch
 from tinymem.evaluation.answerability import (
     evaluate_answerability,
     expected_calibration_error,
+    freeze_before_correction_write_mask,
     selective_prediction_point,
 )
 from tinymem.evaluation.continuous_memory import (
@@ -12,6 +13,7 @@ from tinymem.evaluation.continuous_memory import (
     replace_newest_memory,
 )
 from tinymem.model.memory_input import AttentionMemory
+from tinymem.training.controlled_qa import EncodedQAExample
 
 
 def test_selective_prediction_point_tracks_abstention_quality() -> None:
@@ -89,3 +91,27 @@ def test_slot_interventions_preserve_valid_memory_invariants() -> None:
     assert torch.equal(dropped.positions, torch.tensor([[-1, 2, -1], [-1, 3, -1]]))
     assert torch.equal(replaced.values[0, 2], memory.values[1, 2])
     assert torch.equal(replaced.values[1, 2], memory.values[0, 2])
+
+
+def test_freeze_mask_keeps_set_and_blocks_correction_segments() -> None:
+    examples = [
+        EncodedQAExample(
+            input_ids=(1, 2, 3),
+            answer_id=3,
+            source_example_id="example",
+            segment_event_types=(
+                ("background",),
+                ("set",),
+                ("correction",),
+                ("delete",),
+            ),
+            answerable=False,
+        )
+    ]
+
+    forced = freeze_before_correction_write_mask(examples)
+
+    assert torch.equal(
+        forced,
+        torch.tensor([[False, True, False, False]]),
+    )
