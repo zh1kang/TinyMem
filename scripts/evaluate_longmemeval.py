@@ -10,7 +10,6 @@ from collections import Counter
 from pathlib import Path
 
 import matplotlib
-import torch
 
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt
@@ -25,12 +24,7 @@ from tinymem.evaluation.longmemeval import (
     LongMemEvalResult,
     evaluate_longmemeval,
 )
-from tinymem.memory.continuous import MeanPoolMemoryCompressor
-from tinymem.memory.recurrent_memory import RecurrentMemoryBank
-from tinymem.model.config import ExperimentConfig
-from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
-from tinymem.model.transformer import DecoderOnlyTransformer
-from tinymem.training.checkpointing import load_checkpoint
+from tinymem.evaluation.wikitext_checkpoint import load_wikitext_checkpoint
 from tinymem.utils.device import select_device
 from tinymem.utils.experiment import create_run_directory, current_git_commit
 
@@ -84,41 +78,6 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_decoder(
-    checkpoint_path: Path,
-    *,
-    device: torch.device,
-) -> tuple[SegmentedContinuousDecoder, ExperimentConfig]:
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    if not isinstance(payload, dict) or not isinstance(payload.get("config"), dict):
-        raise ValueError("checkpoint must contain an experiment configuration")
-    extra = payload.get("extra")
-    if not isinstance(extra, dict):
-        raise ValueError("checkpoint must contain architecture metadata")
-    if extra.get("architecture") != "segmented_continuous_wikitext_byte_lm":
-        raise ValueError("checkpoint is not a WikiText segmented language model")
-    selected_window = extra.get("selected_window")
-    if isinstance(selected_window, bool) or not isinstance(selected_window, int):
-        raise ValueError("checkpoint is missing its selected local window")
-
-    config = ExperimentConfig.from_dict(payload["config"])
-    decoder = SegmentedContinuousDecoder(
-        DecoderOnlyTransformer(config.model),
-        MeanPoolMemoryCompressor(config.model.d_model),
-        RecurrentMemoryBank(
-            capacity=config.memory.n_slots,
-            model_width=config.model.d_model,
-        ),
-        segment_length=selected_window,
-    ).to(device)
-    load_checkpoint(
-        checkpoint_path,
-        model=decoder,
-        map_location=device,
-    )
-    return decoder, config
-
-
 def plot_results(
     results: list[LongMemEvalResult],
     destination: Path,
@@ -147,7 +106,9 @@ def main() -> None:
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"checkpoint does not exist: {checkpoint_path}")
     device = select_device(args.device)
-    decoder, config = _load_decoder(checkpoint_path, device=device)
+    loaded = load_wikitext_checkpoint(checkpoint_path, device=device)
+    decoder = loaded.decoder
+    config = loaded.config
     if args.chunk_tokens % decoder.segment_length != 0:
         raise ValueError("chunk_tokens must be a multiple of the selected window")
 
