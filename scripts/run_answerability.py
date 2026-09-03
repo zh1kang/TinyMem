@@ -63,7 +63,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda", "mps"),
-        default="auto",
+        default="cpu",
+        help="CPU is the deterministic default for this experiment",
     )
     parser.add_argument("--train-examples", type=int, default=2_000)
     parser.add_argument("--validation-examples", type=int, default=400)
@@ -313,7 +314,22 @@ def main() -> None:
         },
     )
     plot_results(results, run_directory / "answerability.png")
-    print(json.dumps(result_document, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "seed": args.seed,
+                "training_seconds": training_seconds,
+                "final_training_loss": losses[-1],
+                "validation": validation.evaluation.to_dict(),
+                "test": {
+                    result.intervention: result.evaluation.to_dict()
+                    for result in results
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     print(f"artifacts: {run_directory}")
 
 
