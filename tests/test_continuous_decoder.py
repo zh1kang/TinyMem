@@ -76,6 +76,52 @@ def test_segmented_decoder_returns_logits_and_fixed_memory() -> None:
     assert output.mtp_logits is None
 
 
+def test_segmented_decoder_continues_from_explicit_memory_state() -> None:
+    torch.manual_seed(31)
+    decoder = make_decoder(segment_length=2, capacity=2)
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    token_valid = torch.ones_like(input_ids, dtype=torch.bool)
+
+    complete = decoder(input_ids, token_valid)
+    first = decoder(input_ids[:, :2], token_valid[:, :2])
+    continued = decoder(
+        input_ids[:, 2:],
+        token_valid[:, 2:],
+        initial_memory=AttentionMemory(
+            values=first.memory,
+            valid=first.memory_valid,
+            positions=first.memory_positions,
+        ),
+        position_offset=2,
+    )
+
+    torch.testing.assert_close(
+        continued.logits,
+        complete.logits[:, 2:],
+    )
+    torch.testing.assert_close(continued.memory, complete.memory)
+    assert torch.equal(continued.memory_valid, complete.memory_valid)
+    assert torch.equal(continued.memory_positions, complete.memory_positions)
+
+
+def test_segmented_decoder_validates_initial_memory_shape() -> None:
+    decoder = make_decoder(segment_length=2, capacity=2)
+    input_ids = torch.tensor([[1, 2]])
+    initial_memory = AttentionMemory(
+        values=torch.zeros(1, 1, 8),
+        valid=torch.zeros(1, 1, dtype=torch.bool),
+        positions=torch.full((1, 1), -1, dtype=torch.long),
+    )
+
+    with pytest.raises(ValueError, match="initial_memory values"):
+        decoder(
+            input_ids,
+            torch.ones_like(input_ids, dtype=torch.bool),
+            initial_memory=initial_memory,
+            position_offset=2,
+        )
+
+
 def test_segmented_decoder_concatenates_mtp_logits_across_segments() -> None:
     decoder = make_decoder(segment_length=2, capacity=2)
     decoder.mtp_heads = MultiTokenPredictionHeads(8, 16, (2, 3, 4))

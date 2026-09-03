@@ -306,6 +306,8 @@ class SegmentedContinuousDecoder(nn.Module):
         *,
         memory_intervention: MemoryIntervention | None = None,
         forced_writes: torch.Tensor | None = None,
+        initial_memory: AttentionMemory | None = None,
+        position_offset: int = 0,
     ) -> SegmentedContinuousOutput:
         """Return logits and final memory without breaking the autograd graph."""
         if not isinstance(input_ids, torch.Tensor):
@@ -328,6 +330,36 @@ class SegmentedContinuousDecoder(nn.Module):
             raise ValueError("input_ids and decoder must share a device")
         if memory_intervention is not None and not callable(memory_intervention):
             raise TypeError("memory_intervention must be callable or None")
+        if initial_memory is not None:
+            if not isinstance(initial_memory, AttentionMemory):
+                raise TypeError("initial_memory must be an AttentionMemory or None")
+            if isinstance(self.compressor, DiscreteMemoryCompressor):
+                raise ValueError(
+                    "external initial memory is not supported for discrete codes"
+                )
+            expected_memory_shape = (
+                input_ids.shape[0],
+                self.bank.capacity,
+                self.model.config.d_model,
+            )
+            if initial_memory.values.shape != expected_memory_shape:
+                raise ValueError(
+                    f"initial_memory values must have shape {expected_memory_shape}"
+                )
+            if initial_memory.values.device != input_ids.device:
+                raise ValueError("initial_memory and input_ids must share a device")
+            if (
+                initial_memory.values.dtype
+                != self.model.token_embedding.weight.dtype
+            ):
+                raise ValueError("initial_memory must match the decoder dtype")
+        if isinstance(position_offset, bool) or not isinstance(
+            position_offset,
+            Integral,
+        ):
+            raise TypeError("position_offset must be an integer")
+        if position_offset < 0:
+            raise ValueError("position_offset must be nonnegative")
         if forced_writes is not None:
             if not isinstance(forced_writes, torch.Tensor):
                 raise TypeError("forced_writes must be a torch.Tensor or None")
@@ -353,11 +385,16 @@ class SegmentedContinuousDecoder(nn.Module):
         ):
             raise ValueError("token_valid must describe right-padded rows")
 
-        memory, memory_valid, memory_positions = self._empty_memory(
-            batch_size=input_ids.shape[0],
-            device=input_ids.device,
-            dtype=self.model.token_embedding.weight.dtype,
-        )
+        if initial_memory is None:
+            memory, memory_valid, memory_positions = self._empty_memory(
+                batch_size=input_ids.shape[0],
+                device=input_ids.device,
+                dtype=self.model.token_embedding.weight.dtype,
+            )
+        else:
+            memory = initial_memory.values
+            memory_valid = initial_memory.valid
+            memory_positions = initial_memory.positions
         segment_logits = []
         segment_answerability_logits = []
         segment_mtp_logits = (
@@ -409,10 +446,11 @@ class SegmentedContinuousDecoder(nn.Module):
         code_assignments = []
         proposed_code_valid = []
         prequantized_codes = []
-        for offset in range(0, input_ids.shape[1], self.segment_length):
-            end = offset + self.segment_length
-            segment_ids = input_ids[:, offset:end]
-            segment_valid = token_valid[:, offset:end]
+        for local_offset in range(0, input_ids.shape[1], self.segment_length):
+            offset = int(position_offset) + local_offset
+            end = local_offset + self.segment_length
+            segment_ids = input_ids[:, local_offset:end]
+            segment_valid = token_valid[:, local_offset:end]
             attention_memory = AttentionMemory(
                 values=memory,
                 valid=memory_valid,
@@ -490,7 +528,7 @@ class SegmentedContinuousDecoder(nn.Module):
                     segment_valid,
                 )
             if forced_writes is not None:
-                segment_index = offset // self.segment_length
+                segment_index = local_offset // self.segment_length
                 external_write_strength = forced_writes[
                     :,
                     segment_index : segment_index + 1,
