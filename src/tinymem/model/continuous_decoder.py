@@ -15,7 +15,6 @@ from tinymem.memory.recurrent_memory import (
     RecurrentMemoryBank,
 )
 from tinymem.memory.write_gate import TokenSegmentWriteGate
-from tinymem.model.kv_cache import KVCache
 from tinymem.model.memory_input import AttentionMemory
 from tinymem.model.multi_token_prediction import MultiTokenPredictionHeads
 from tinymem.model.transformer import DecoderOnlyTransformer
@@ -412,13 +411,10 @@ class SegmentedContinuousDecoder(nn.Module):
                     raise TypeError(
                         "memory_intervention must return AttentionMemory"
                     )
-            caches = [
-                KVCache(
-                    max_length=self.segment_length,
-                    start_position=offset,
-                )
-                for _ in range(self.model.config.n_layers)
-            ]
+            caches = self.model.create_caches(
+                max_length=self.segment_length,
+                start_position=offset,
+            )
             hidden_states = self.model.forward_hidden(
                 segment_ids,
                 position_offset=offset,

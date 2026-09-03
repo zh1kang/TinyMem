@@ -7,6 +7,7 @@ from tinymem.model.attention import AttentionObserver
 from tinymem.model.block import TransformerBlock
 from tinymem.model.config import ModelConfig
 from tinymem.model.kv_cache import KVCache
+from tinymem.model.latent_kv_cache import LatentKVCache
 from tinymem.model.memory_input import AttentionMemory
 from tinymem.model.normalization import RMSNorm
 
@@ -39,6 +40,8 @@ class DecoderOnlyTransformer(nn.Module):
                 d_ff=config.d_ff,
                 max_position_embeddings=config.max_local_tokens,
                 dropout=config.dropout,
+                attention_type=config.attention_type,
+                kv_latent_dim=config.kv_latent_dim,
             )
             for _ in range(config.n_layers)
         )
@@ -52,7 +55,7 @@ class DecoderOnlyTransformer(nn.Module):
         input_ids: torch.Tensor,
         *,
         position_offset: int = 0,
-        caches: list[KVCache] | None = None,
+        caches: list[KVCache | LatentKVCache] | None = None,
         attention_observer: AttentionObserver | None = None,
         memory: AttentionMemory | None = None,
     ) -> torch.Tensor:
@@ -72,7 +75,7 @@ class DecoderOnlyTransformer(nn.Module):
         input_ids: torch.Tensor,
         *,
         position_offset: int = 0,
-        caches: list[KVCache] | None = None,
+        caches: list[KVCache | LatentKVCache] | None = None,
         attention_observer: AttentionObserver | None = None,
         memory: AttentionMemory | None = None,
     ) -> torch.Tensor:
@@ -114,8 +117,15 @@ class DecoderOnlyTransformer(nn.Module):
                 raise ValueError(
                     f"caches must contain {self.config.n_layers} layers, got {len(caches)}"
                 )
-            if not all(isinstance(cache, KVCache) for cache in caches):
-                raise TypeError("caches must contain only KVCache objects")
+            expected_cache_type = (
+                KVCache
+                if self.config.attention_type == "mha"
+                else LatentKVCache
+            )
+            if not all(isinstance(cache, expected_cache_type) for cache in caches):
+                raise TypeError(
+                    "caches must match the configured attention type"
+                )
             if input_ids.shape[1] > self.config.max_local_tokens:
                 raise ValueError(
                     "input segment exceeds max_local_tokens "
@@ -146,3 +156,29 @@ class DecoderOnlyTransformer(nn.Module):
                 )
         hidden_states = self.final_norm(hidden_states)
         return hidden_states
+
+    def create_caches(
+        self,
+        *,
+        max_length: int | None = None,
+        start_position: int = 0,
+    ) -> list[KVCache | LatentKVCache]:
+        """Create one correctly typed local cache for every decoder layer."""
+        if max_length is None:
+            max_length = self.config.max_local_tokens
+        if isinstance(max_length, bool) or not isinstance(max_length, int):
+            raise TypeError("max_length must be an integer or None")
+        if max_length <= 0:
+            raise ValueError("max_length must be positive")
+        if isinstance(start_position, bool) or not isinstance(start_position, int):
+            raise TypeError("start_position must be an integer")
+        if start_position < 0:
+            raise ValueError("start_position must be nonnegative")
+
+        cache_type = (
+            KVCache if self.config.attention_type == "mha" else LatentKVCache
+        )
+        return [
+            cache_type(max_length=max_length, start_position=start_position)
+            for _ in range(self.config.n_layers)
+        ]

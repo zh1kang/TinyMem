@@ -17,6 +17,8 @@ def test_model_config_defaults() -> None:
     assert config.max_local_tokens == 128
     assert config.positional_encoding == "rope"
     assert config.tie_embeddings is True
+    assert config.attention_type == "mha"
+    assert config.kv_latent_dim is None
     assert config.d_model // config.n_heads == 64
 
 
@@ -95,3 +97,27 @@ def test_model_config_rejects_nonboolean_embedding_tying() -> None:
 
 def test_model_config_accepts_disabled_embedding_tying() -> None:
     assert ModelConfig(tie_embeddings=False).tie_embeddings is False
+
+
+def test_model_config_accepts_mla_lite() -> None:
+    config = ModelConfig(attention_type="mla_lite", kv_latent_dim=64)
+
+    assert config.attention_type == "mla_lite"
+    assert config.kv_latent_dim == 64
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"attention_type": "unknown"},
+        {"attention_type": "mha", "kv_latent_dim": 64},
+        {"attention_type": "mla_lite"},
+        {"attention_type": "mla_lite", "kv_latent_dim": 0},
+        {"attention_type": "mla_lite", "kv_latent_dim": 256},
+    ],
+)
+def test_model_config_rejects_invalid_attention_configuration(
+    values: dict[str, object],
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        ModelConfig(**values)

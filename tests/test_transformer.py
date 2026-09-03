@@ -3,6 +3,8 @@ import torch
 
 from tinymem.model.config import ModelConfig
 from tinymem.model.kv_cache import KVCache
+from tinymem.model.latent_kv_cache import LatentKVCache
+from tinymem.model.mla_lite import MLALiteAttention
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.losses import next_token_cross_entropy
 
@@ -216,3 +218,51 @@ def test_transformer_rejects_invalid_caches(caches: object) -> None:
 
     with pytest.raises((TypeError, ValueError)):
         model(input_ids, caches=caches)
+
+
+def test_transformer_builds_mla_lite_blocks_and_caches() -> None:
+    model = DecoderOnlyTransformer(
+        make_config(attention_type="mla_lite", kv_latent_dim=4)
+    )
+
+    caches = model.create_caches()
+
+    assert all(
+        isinstance(block.attention, MLALiteAttention)
+        for block in model.transformer_blocks
+    )
+    assert all(isinstance(cache, LatentKVCache) for cache in caches)
+
+
+def test_cached_mla_lite_transformer_matches_full_decoding() -> None:
+    torch.manual_seed(29)
+    model = DecoderOnlyTransformer(
+        make_config(attention_type="mla_lite", kv_latent_dim=4)
+    ).eval()
+    input_ids = torch.randint(0, 32, (1, 6))
+    expected = model(input_ids)
+    caches = model.create_caches()
+    outputs = []
+
+    for index in range(input_ids.shape[1]):
+        outputs.append(
+            model(
+                input_ids[:, index : index + 1],
+                position_offset=caches[0].end_position,
+                caches=caches,
+            )
+        )
+
+    torch.testing.assert_close(torch.cat(outputs, dim=1), expected)
+
+
+def test_mla_lite_transformer_rejects_standard_caches() -> None:
+    model = DecoderOnlyTransformer(
+        make_config(attention_type="mla_lite", kv_latent_dim=4)
+    )
+
+    with pytest.raises(TypeError, match="configured attention"):
+        model(
+            torch.ones(1, 1, dtype=torch.long),
+            caches=[KVCache(16), KVCache(16)],
+        )

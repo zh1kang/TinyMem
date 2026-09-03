@@ -5,7 +5,6 @@ from numbers import Real
 
 import torch
 
-from tinymem.model.kv_cache import KVCache
 from tinymem.model.transformer import DecoderOnlyTransformer
 
 
@@ -67,10 +66,7 @@ def generate(
     if max_new_tokens == 0:
         return generated
 
-    caches = [
-        KVCache(max_length=model.config.max_local_tokens)
-        for _ in range(model.config.n_layers)
-    ]
+    caches = model.create_caches()
     logits = model(generated, caches=caches)
     for step in range(max_new_tokens):
         next_logits = logits[:, -1, :]

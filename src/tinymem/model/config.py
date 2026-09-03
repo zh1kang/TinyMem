@@ -13,6 +13,8 @@ class ModelConfig:
     max_local_tokens: int = 128
     positional_encoding: str = "rope"
     tie_embeddings: bool = True
+    attention_type: str = "mha"
+    kv_latent_dim: int | None = None
 
     def __post_init__(self) -> None:
         positive_integer_fields = (
@@ -46,6 +48,23 @@ class ModelConfig:
 
         if not isinstance(self.tie_embeddings, bool):
             raise TypeError("tie_embeddings must be a boolean")
+
+        if not isinstance(self.attention_type, str):
+            raise TypeError("attention_type must be a string")
+        if self.attention_type not in {"mha", "mla_lite"}:
+            raise ValueError("attention_type must be 'mha' or 'mla_lite'")
+        if self.attention_type == "mha":
+            if self.kv_latent_dim is not None:
+                raise ValueError("kv_latent_dim must be None for MHA")
+        else:
+            if isinstance(self.kv_latent_dim, bool) or not isinstance(
+                self.kv_latent_dim, int
+            ):
+                raise TypeError("kv_latent_dim must be an integer for MLA-lite")
+            if self.kv_latent_dim <= 0:
+                raise ValueError("kv_latent_dim must be positive")
+            if self.kv_latent_dim >= self.d_model:
+                raise ValueError("kv_latent_dim must be smaller than d_model")
 
 
 @dataclass(frozen=True)

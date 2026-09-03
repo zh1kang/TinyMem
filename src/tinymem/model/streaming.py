@@ -12,7 +12,6 @@ from tinymem.memory.candidates import build_scored_token_candidates
 from tinymem.memory.interfaces import MemoryPolicy
 from tinymem.memory.state import MemoryState
 from tinymem.memory.token_window import LocalTokenWindow, RawTokenBatch
-from tinymem.model.kv_cache import KVCache
 from tinymem.model.memory_input import AttentionMemory
 from tinymem.model.transformer import DecoderOnlyTransformer
 
@@ -47,10 +46,7 @@ class StreamingDecoder:
         self.segment_length = int(segment_length)
         self.memory_policy = memory_policy
         self.generator = generator
-        self.caches = [
-            KVCache(max_length=model.config.max_local_tokens)
-            for _ in range(model.config.n_layers)
-        ]
+        self.caches = model.create_caches()
         self._token_window = (
             LocalTokenWindow(model.config.max_local_tokens)
             if memory_policy is not None

@@ -8,7 +8,9 @@ from torch import nn
 from tinymem.model.attention import AttentionObserver, CausalSelfAttention
 from tinymem.model.feedforward import FeedForward
 from tinymem.model.kv_cache import KVCache
+from tinymem.model.latent_kv_cache import LatentKVCache
 from tinymem.model.memory_input import AttentionMemory
+from tinymem.model.mla_lite import MLALiteAttention
 from tinymem.model.normalization import RMSNorm
 
 
@@ -25,6 +27,8 @@ class TransformerBlock(nn.Module):
         d_ff: int,
         max_position_embeddings: int,
         dropout: float = 0.0,
+        attention_type: str = "mha",
+        kv_latent_dim: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -63,20 +67,43 @@ class TransformerBlock(nn.Module):
             raise TypeError(f"dropout must be a real number, got {type(dropout)}")
         if not 0.0 <= dropout < 1.0:
             raise ValueError(f"dropout must be in [0.0, 1.0), got {dropout}")
+        if not isinstance(attention_type, str):
+            raise TypeError("attention_type must be a string")
+        if attention_type not in {"mha", "mla_lite"}:
+            raise ValueError("attention_type must be 'mha' or 'mla_lite'")
+        if attention_type == "mha" and kv_latent_dim is not None:
+            raise ValueError("kv_latent_dim must be None for MHA")
+        if attention_type == "mla_lite":
+            if isinstance(kv_latent_dim, bool) or not isinstance(kv_latent_dim, int):
+                raise TypeError("kv_latent_dim must be an integer for MLA-lite")
+            if not 0 < kv_latent_dim < d_model:
+                raise ValueError("kv_latent_dim must be between zero and d_model")
 
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_ff = d_ff
         self.max_position_embeddings = max_position_embeddings
         self.dropout_probability = dropout
+        self.attention_type = attention_type
+        self.kv_latent_dim = kv_latent_dim
 
         self.norm_attention = RMSNorm(d_model)
-        self.attention = CausalSelfAttention(
-            d_model=d_model,
-            n_heads=n_heads,
-            max_position_embeddings=max_position_embeddings,
-            dropout=dropout,
-        )
+        if attention_type == "mha":
+            self.attention = CausalSelfAttention(
+                d_model=d_model,
+                n_heads=n_heads,
+                max_position_embeddings=max_position_embeddings,
+                dropout=dropout,
+            )
+        else:
+            assert kv_latent_dim is not None
+            self.attention = MLALiteAttention(
+                d_model=d_model,
+                n_heads=n_heads,
+                kv_latent_dim=kv_latent_dim,
+                max_position_embeddings=max_position_embeddings,
+                dropout=dropout,
+            )
         self.norm_feed_forward = RMSNorm(d_model)
         self.feed_forward = FeedForward(
             d_model=d_model,
@@ -88,7 +115,7 @@ class TransformerBlock(nn.Module):
         x: torch.Tensor,
         *,
         position_offset: int = 0,
-        cache: KVCache | None = None,
+        cache: KVCache | LatentKVCache | None = None,
         attention_observer: AttentionObserver | None = None,
         memory: AttentionMemory | None = None,
     ) -> torch.Tensor:
