@@ -37,10 +37,10 @@ from tinymem.utils.experiment import create_run_directory, current_git_commit
 
 CONDITIONS = (
     "normal",
-    "drop_newest",
-    "stale",
-    "replace_newest",
-    "freeze",
+    "drop_newest_at_query",
+    "stale_at_query",
+    "replace_newest_at_query",
+    "freeze_all_writes",
 )
 
 
@@ -180,10 +180,10 @@ def main() -> None:
 
     intervention_by_name = {
         "normal": None,
-        "drop_newest": drop_newest_memory,
-        "stale": keep_oldest_memory,
-        "replace_newest": replace_newest_memory,
-        "freeze": None,
+        "drop_newest_at_query": drop_newest_memory,
+        "stale_at_query": keep_oldest_memory,
+        "replace_newest_at_query": replace_newest_memory,
+        "freeze_all_writes": None,
     }
     results = [
         evaluate_longmemeval(
@@ -193,8 +193,8 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
             chunk_tokens=args.chunk_tokens,
             condition=condition,
-            memory_intervention=intervention_by_name[condition],
-            update_memory=condition != "freeze",
+            query_memory_intervention=intervention_by_name[condition],
+            update_memory=condition != "freeze_all_writes",
         )
         for condition in dict.fromkeys(args.conditions)
     ]

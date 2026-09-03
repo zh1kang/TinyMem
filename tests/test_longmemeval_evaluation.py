@@ -11,7 +11,9 @@ from tinymem.evaluation.longmemeval import (
     format_longmemeval_prompt,
     is_abstention,
     normalized_answer,
+    generate_longmemeval_answer,
 )
+from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.memory.continuous import MeanPoolMemoryCompressor
 from tinymem.memory.recurrent_memory import RecurrentMemoryBank
 from tinymem.model.config import ModelConfig
@@ -89,3 +91,24 @@ def test_longmemeval_evaluation_returns_category_metrics() -> None:
     assert len(result.predictions) == 1
     assert result.predictions[0].context_bytes > 0
     assert torch.isfinite(torch.tensor(result.predictions[0].token_f1))
+
+
+def test_query_memory_intervention_is_applied_once() -> None:
+    calls = 0
+
+    def count_intervention(memory):
+        nonlocal calls
+        calls += 1
+        return memory
+
+    generate_longmemeval_answer(
+        make_decoder(),
+        ByteTokenizer(),
+        make_example(),
+        device="cpu",
+        max_new_tokens=2,
+        chunk_tokens=16,
+        query_memory_intervention=count_intervention,
+    )
+
+    assert calls == 1

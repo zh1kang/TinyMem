@@ -140,7 +140,7 @@ def generate_longmemeval_answer(
     device: torch.device | str,
     max_new_tokens: int,
     chunk_tokens: int,
-    memory_intervention: MemoryIntervention | None = None,
+    query_memory_intervention: MemoryIntervention | None = None,
     update_memory: bool = True,
 ) -> tuple[str, int]:
     """Stream one ordered prompt and greedily generate a bounded answer."""
@@ -158,8 +158,10 @@ def generate_longmemeval_answer(
         raise ValueError("generation counts must be positive")
     if chunk_tokens % decoder.segment_length != 0:
         raise ValueError("chunk_tokens must be a multiple of segment_length")
-    if memory_intervention is not None and not callable(memory_intervention):
-        raise TypeError("memory_intervention must be callable or None")
+    if query_memory_intervention is not None and not callable(
+        query_memory_intervention
+    ):
+        raise TypeError("query_memory_intervention must be callable or None")
     if not isinstance(update_memory, bool):
         raise TypeError("update_memory must be a boolean")
 
@@ -167,9 +169,14 @@ def generate_longmemeval_answer(
     memory = None
     position = 0
     next_logits = None
-    for start in range(0, len(prompt_ids), int(chunk_tokens)):
+    final_segment_start = (
+        (len(prompt_ids) - 1) // decoder.segment_length
+    ) * decoder.segment_length
+    for start in range(0, final_segment_start, int(chunk_tokens)):
         chunk = torch.tensor(
-            prompt_ids[start : start + int(chunk_tokens)],
+            prompt_ids[
+                start : min(start + int(chunk_tokens), final_segment_start)
+            ],
             dtype=torch.long,
             device=device,
         ).unsqueeze(0)
@@ -178,7 +185,6 @@ def generate_longmemeval_answer(
             torch.ones_like(chunk, dtype=torch.bool),
             initial_memory=memory,
             position_offset=position,
-            memory_intervention=memory_intervention,
             update_memory=update_memory,
         )
         memory = _memory_from_output(
@@ -188,8 +194,53 @@ def generate_longmemeval_answer(
         )
         position += chunk.shape[1]
         next_logits = output.logits[:, -1]
-    if next_logits is None or memory is None:
-        raise RuntimeError("LongMemEval prompt encoded to no tokens")
+    if memory is None:
+        memory = AttentionMemory(
+            values=torch.zeros(
+                1,
+                decoder.bank.capacity,
+                decoder.model.config.d_model,
+                dtype=decoder.model.token_embedding.weight.dtype,
+                device=device,
+            ),
+            valid=torch.zeros(
+                1,
+                decoder.bank.capacity,
+                dtype=torch.bool,
+                device=device,
+            ),
+            positions=torch.full(
+                (1, decoder.bank.capacity),
+                -1,
+                dtype=torch.long,
+                device=device,
+            ),
+        )
+    if query_memory_intervention is not None:
+        memory = query_memory_intervention(memory)
+        if not isinstance(memory, AttentionMemory):
+            raise TypeError(
+                "query_memory_intervention must return AttentionMemory"
+            )
+    final_chunk = torch.tensor(
+        prompt_ids[final_segment_start:],
+        dtype=torch.long,
+        device=device,
+    ).unsqueeze(0)
+    output = decoder(
+        final_chunk,
+        torch.ones_like(final_chunk, dtype=torch.bool),
+        initial_memory=memory,
+        position_offset=position,
+        update_memory=update_memory,
+    )
+    memory = _memory_from_output(
+        output.memory,
+        output.memory_valid,
+        output.memory_positions,
+    )
+    position += final_chunk.shape[1]
+    next_logits = output.logits[:, -1]
 
     frozen_memory = memory
     generated: list[int] = []
@@ -210,7 +261,6 @@ def generate_longmemeval_answer(
             torch.ones_like(prefix, dtype=torch.bool),
             initial_memory=frozen_memory,
             position_offset=position,
-            memory_intervention=memory_intervention,
             update_memory=False,
         )
         next_logits = output.logits[:, -1]
@@ -247,7 +297,7 @@ def evaluate_longmemeval(
     max_new_tokens: int,
     chunk_tokens: int,
     condition: str = "normal",
-    memory_intervention: MemoryIntervention | None = None,
+    query_memory_intervention: MemoryIntervention | None = None,
     update_memory: bool = True,
 ) -> LongMemEvalResult:
     """Evaluate a frozen decoder without using answers in its prompts."""
@@ -273,7 +323,7 @@ def evaluate_longmemeval(
                 device=device,
                 max_new_tokens=max_new_tokens,
                 chunk_tokens=chunk_tokens,
-                memory_intervention=memory_intervention,
+                query_memory_intervention=query_memory_intervention,
                 update_memory=update_memory,
             )
             reference = str(example.answer)
