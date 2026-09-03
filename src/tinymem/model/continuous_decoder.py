@@ -15,6 +15,7 @@ from tinymem.memory.recurrent_memory import (
     RecurrentMemoryBank,
 )
 from tinymem.memory.write_gate import TokenSegmentWriteGate
+from tinymem.model.answerability import AnswerabilityHead
 from tinymem.model.memory_input import AttentionMemory
 from tinymem.model.multi_token_prediction import MultiTokenPredictionHeads
 from tinymem.model.transformer import DecoderOnlyTransformer
@@ -29,6 +30,7 @@ class SegmentedContinuousOutput:
     """Hold logits and the final explicit segmented-memory state."""
 
     logits: torch.Tensor
+    answerability_logits: torch.Tensor | None
     mtp_logits: dict[int, torch.Tensor] | None
     memory: torch.Tensor
     memory_valid: torch.Tensor
@@ -61,6 +63,7 @@ class SegmentedContinuousDecoder(nn.Module):
         write_gate: TokenSegmentWriteGate | None = None,
         write_controller: AdaptiveWriteController | None = None,
         mtp_heads: MultiTokenPredictionHeads | None = None,
+        answerability_head: AnswerabilityHead | None = None,
         memory_position_mode: str = "absolute",
     ) -> None:
         super().__init__()
@@ -107,6 +110,18 @@ class SegmentedContinuousDecoder(nn.Module):
             or mtp_heads.vocab_size != model.config.vocab_size
         ):
             raise ValueError("MTP heads must match the model width and vocabulary")
+        if answerability_head is not None and not isinstance(
+            answerability_head,
+            AnswerabilityHead,
+        ):
+            raise TypeError(
+                "answerability_head must be an AnswerabilityHead or None"
+            )
+        if (
+            answerability_head is not None
+            and answerability_head.model_width != model.config.d_model
+        ):
+            raise ValueError("answerability head must match the model width")
         if write_gate is not None and not isinstance(
             bank,
             GatedRecurrentMemoryBank,
@@ -143,6 +158,7 @@ class SegmentedContinuousDecoder(nn.Module):
         self.write_gate = write_gate
         self.write_controller = write_controller
         self.mtp_heads = mtp_heads
+        self.answerability_head = answerability_head
         self.memory_position_mode = memory_position_mode
 
     def _empty_memory(
@@ -343,6 +359,7 @@ class SegmentedContinuousDecoder(nn.Module):
             dtype=self.model.token_embedding.weight.dtype,
         )
         segment_logits = []
+        segment_answerability_logits = []
         segment_mtp_logits = (
             {horizon: [] for horizon in self.mtp_heads.horizons}
             if self.mtp_heads is not None
@@ -423,6 +440,10 @@ class SegmentedContinuousDecoder(nn.Module):
             )
             current_logits = self.model.lm_head(hidden_states)
             segment_logits.append(current_logits)
+            if self.answerability_head is not None:
+                segment_answerability_logits.append(
+                    self.answerability_head(hidden_states, attention_memory)
+                )
             if self.mtp_heads is not None:
                 assert segment_mtp_logits is not None
                 for horizon, logits in self.mtp_heads(hidden_states).items():
@@ -540,6 +561,11 @@ class SegmentedContinuousDecoder(nn.Module):
 
         return SegmentedContinuousOutput(
             logits=torch.cat(segment_logits, dim=1),
+            answerability_logits=(
+                torch.cat(segment_answerability_logits, dim=1)
+                if segment_answerability_logits
+                else None
+            ),
             mtp_logits=(
                 {
                     horizon: torch.cat(logits, dim=1)
