@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import random
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -19,6 +18,7 @@ from matplotlib import pyplot as plt
 
 from tinymem.data.babi import load_babi_file
 from tinymem.data.correction_deletion import generate_update_examples
+from tinymem.data.sampling import select_reasoning_examples
 from tinymem.data.schema import ReasoningExample
 from tinymem.data.wikitext import load_wikitext_parquet
 from tinymem.evaluation.conversational_qa import (
@@ -86,22 +86,6 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def select_examples(
-    examples: list[ReasoningExample],
-    *,
-    count: int,
-    seed: int,
-) -> list[ReasoningExample]:
-    """Select a deterministic sample without changing source examples."""
-    if isinstance(count, bool) or not isinstance(count, int):
-        raise TypeError("count must be an integer")
-    if isinstance(seed, bool) or not isinstance(seed, int):
-        raise TypeError("seed must be an integer")
-    if count <= 0 or count > len(examples):
-        raise ValueError("count must select available examples")
-    return random.Random(seed).sample(examples, count)
-
-
 def load_controlled_examples(
     data_root: Path,
     *,
@@ -120,7 +104,7 @@ def load_controlled_examples(
             split=split,
         )
         selected.extend(
-            select_examples(
+            select_reasoning_examples(
                 examples,
                 count=examples_per_task,
                 seed=seed + task_index,
