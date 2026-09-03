@@ -60,6 +60,7 @@ def test_load_wikitext_checkpoint_restores_decoder(tmp_path: Path) -> None:
     loaded = load_wikitext_checkpoint(path, device="cpu")
 
     assert loaded.selected_window == 4
+    assert loaded.architecture == "segmented_continuous_wikitext_byte_lm"
     assert loaded.config.model.vocab_size == 260
     for name, parameter in expected.state_dict().items():
         torch.testing.assert_close(loaded.decoder.state_dict()[name], parameter)
@@ -71,8 +72,22 @@ def test_load_wikitext_checkpoint_rejects_other_architectures(
     path = tmp_path / "checkpoint.pt"
     make_checkpoint(path, architecture="other")
 
-    with pytest.raises(ValueError, match="not a WikiText"):
+    with pytest.raises(ValueError, match="not a supported"):
         load_wikitext_checkpoint(path, device="cpu")
+
+
+def test_load_wikitext_checkpoint_accepts_conversational_descendant(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "checkpoint.pt"
+    make_checkpoint(
+        path,
+        architecture="segmented_continuous_conversational_qa",
+    )
+
+    loaded = load_wikitext_checkpoint(path, device="cpu")
+
+    assert loaded.architecture == "segmented_continuous_conversational_qa"
 
 
 def test_load_wikitext_checkpoint_rejects_segment_metadata_mismatch(

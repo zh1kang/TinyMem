@@ -16,6 +16,14 @@ from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.training.checkpointing import load_checkpoint
 
 
+SUPPORTED_BYTE_MEMORY_ARCHITECTURES = frozenset(
+    {
+        "segmented_continuous_wikitext_byte_lm",
+        "segmented_continuous_conversational_qa",
+    }
+)
+
+
 @dataclass(frozen=True)
 class LoadedWikiTextCheckpoint:
     """Hold a reconstructed frozen decoder and its experiment config."""
@@ -23,6 +31,7 @@ class LoadedWikiTextCheckpoint:
     decoder: SegmentedContinuousDecoder
     config: ExperimentConfig
     selected_window: int
+    architecture: str
 
 
 def load_wikitext_checkpoint(
@@ -40,8 +49,9 @@ def load_wikitext_checkpoint(
     extra = payload.get("extra")
     if not isinstance(extra, dict):
         raise ValueError("checkpoint must contain architecture metadata")
-    if extra.get("architecture") != "segmented_continuous_wikitext_byte_lm":
-        raise ValueError("checkpoint is not a WikiText segmented language model")
+    architecture = extra.get("architecture")
+    if architecture not in SUPPORTED_BYTE_MEMORY_ARCHITECTURES:
+        raise ValueError("checkpoint is not a supported segmented byte model")
     if extra.get("tokenizer") != "utf8_bytes_v1":
         raise ValueError("checkpoint does not use the expected byte tokenizer")
     selected_window = extra.get("selected_window")
@@ -76,4 +86,5 @@ def load_wikitext_checkpoint(
         decoder=decoder,
         config=config,
         selected_window=selected_window,
+        architecture=architecture,
     )
