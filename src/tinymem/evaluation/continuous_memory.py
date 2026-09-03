@@ -296,6 +296,59 @@ def shuffle_memory(memory: AttentionMemory) -> AttentionMemory:
     )
 
 
+def drop_newest_memory(memory: AttentionMemory) -> AttentionMemory:
+    """Remove the newest readable slot from each row."""
+    slot_indices = torch.arange(
+        memory.slot_count,
+        device=memory.values.device,
+    ).unsqueeze(0)
+    newest = slot_indices.masked_fill(~memory.valid, -1).amax(dim=1)
+    remove = slot_indices == newest.unsqueeze(1)
+    valid = memory.valid & ~remove
+    return AttentionMemory(
+        values=memory.values,
+        valid=valid,
+        positions=memory.positions.masked_fill(~valid, -1),
+    )
+
+
+def keep_oldest_memory(memory: AttentionMemory) -> AttentionMemory:
+    """Keep only the oldest readable slot to simulate stale state."""
+    slot_indices = torch.arange(
+        memory.slot_count,
+        device=memory.values.device,
+    ).unsqueeze(0)
+    sentinel = memory.slot_count
+    oldest = slot_indices.masked_fill(~memory.valid, sentinel).amin(dim=1)
+    valid = memory.valid & (slot_indices == oldest.unsqueeze(1))
+    return AttentionMemory(
+        values=memory.values,
+        valid=valid,
+        positions=memory.positions.masked_fill(~valid, -1),
+    )
+
+
+def replace_newest_memory(memory: AttentionMemory) -> AttentionMemory:
+    """Replace each newest slot with mismatched content."""
+    slot_indices = torch.arange(
+        memory.slot_count,
+        device=memory.values.device,
+    ).unsqueeze(0)
+    newest = slot_indices.masked_fill(~memory.valid, -1).amax(dim=1)
+    replace = memory.valid & (slot_indices == newest.unsqueeze(1))
+    replacement = (
+        memory.values.roll(1, dims=0)
+        if memory.values.shape[0] > 1
+        else -memory.values
+    )
+    values = torch.where(replace.unsqueeze(-1), replacement, memory.values)
+    return AttentionMemory(
+        values=values,
+        valid=memory.valid,
+        positions=memory.positions,
+    )
+
+
 def _build_curve(
     counts: dict[str, list[int]],
     limits: tuple[int, ...],
