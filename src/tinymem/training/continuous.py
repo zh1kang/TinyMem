@@ -7,6 +7,7 @@ import torch
 from torch.nn import functional as F
 from torch.optim import Optimizer
 
+from tinymem.data.correction_deletion import UNKNOWN
 from tinymem.data.schema import ReasoningExample
 from tinymem.data.symbolic_world import parse_qa1_movement
 from tinymem.data.vocabulary import ControlledVocabulary
@@ -223,6 +224,7 @@ def encode_update_with_write_targets(
             tuple(sorted(labels)) if labels else ("background",)
             for labels in event_types
         ),
+        answerable=example.answer != UNKNOWN,
     )
 
 
@@ -488,6 +490,7 @@ def train_continuous_answer_supervision(
     write_cost_weight: float = 0.0,
     controller_temperature_schedule: GumbelTemperatureSchedule | None = None,
     mtp_loss_weight: float = 0.0,
+    answerability_loss_weight: float = 0.0,
 ) -> list[float]:
     """Train a segmented decoder and return one finite loss per step."""
     if not isinstance(decoder, SegmentedContinuousDecoder):
@@ -542,6 +545,17 @@ def train_continuous_answer_supervision(
         raise ValueError("mtp_loss_weight must be nonnegative")
     if mtp_loss_weight > 0 and decoder.mtp_heads is None:
         raise ValueError("positive MTP loss requires MTP heads")
+    if isinstance(answerability_loss_weight, bool) or not isinstance(
+        answerability_loss_weight,
+        Real,
+    ):
+        raise TypeError("answerability_loss_weight must be a real number")
+    if answerability_loss_weight < 0:
+        raise ValueError("answerability_loss_weight must be nonnegative")
+    if answerability_loss_weight > 0 and decoder.answerability_head is None:
+        raise ValueError(
+            "positive answerability loss requires an answerability head"
+        )
     if temperature_schedule is not None and not isinstance(
         temperature_schedule,
         GumbelTemperatureSchedule,
@@ -601,6 +615,12 @@ def train_continuous_answer_supervision(
         raise ValueError(
             "positive write loss requires segment write targets for every example"
         )
+    if answerability_loss_weight > 0 and not all(
+        example.answerable is not None for example in examples
+    ):
+        raise ValueError(
+            "positive answerability loss requires labels for every example"
+        )
 
     generator = torch.Generator().manual_seed(seed)
     losses = []
@@ -632,6 +652,26 @@ def train_continuous_answer_supervision(
         optimizer.zero_grad(set_to_none=True)
         output = decoder(input_ids, token_valid)
         loss = next_token_cross_entropy(output.logits, target_ids)
+        if answerability_loss_weight > 0:
+            if output.answerability_logits is None:
+                raise ValueError(
+                    "positive answerability loss requires answerability logits"
+                )
+            rows = torch.arange(len(batch), device=input_ids.device)
+            prompt_positions = torch.tensor(
+                [len(example.input_ids) - 2 for example in batch],
+                device=input_ids.device,
+            )
+            answerability_targets = torch.tensor(
+                [bool(example.answerable) for example in batch],
+                dtype=output.answerability_logits.dtype,
+                device=input_ids.device,
+            )
+            answerability_loss = F.binary_cross_entropy_with_logits(
+                output.answerability_logits[rows, prompt_positions],
+                answerability_targets,
+            )
+            loss = loss + answerability_loss_weight * answerability_loss
         if mtp_loss_weight > 0:
             if output.mtp_logits is None:
                 raise ValueError("positive MTP loss requires MTP logits")
