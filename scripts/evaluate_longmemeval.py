@@ -59,6 +59,7 @@ def parse_args() -> argparse.Namespace:
         default=("normal",),
     )
     parser.add_argument("--max-examples", type=int, default=0)
+    parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--examples-per-type", type=int, default=0)
     parser.add_argument("--max-new-tokens", type=int, default=64)
     parser.add_argument("--chunk-tokens", type=int, default=512)
@@ -157,6 +158,11 @@ def main() -> None:
     )
     dataset_path = repository_root / "data/raw/longmemeval" / dataset_name
     examples = load_longmemeval_file(dataset_path)
+    source_example_count = len(examples)
+    if args.start_index < 0 or args.start_index >= source_example_count:
+        raise ValueError("start_index must select an installed example")
+    if args.examples_per_type and args.start_index:
+        raise ValueError("start_index cannot be used with examples_per_type")
     if args.max_examples and args.examples_per_type:
         raise ValueError(
             "max_examples and examples_per_type are mutually exclusive"
@@ -164,7 +170,11 @@ def main() -> None:
     if args.max_examples:
         if args.max_examples < 0:
             raise ValueError("max_examples must be nonnegative")
-        examples = examples[: args.max_examples]
+        examples = examples[
+            args.start_index : args.start_index + args.max_examples
+        ]
+    elif args.start_index:
+        examples = examples[args.start_index :]
     if args.examples_per_type:
         if args.examples_per_type < 0:
             raise ValueError("examples_per_type must be nonnegative")
@@ -215,6 +225,7 @@ def main() -> None:
         "status": (
             "frozen_full_external_test"
             if args.max_examples == 0
+            and args.start_index == 0
             and args.examples_per_type == 0
             and args.dataset_variant == "small"
             else "development_external_evaluation"
@@ -233,6 +244,8 @@ def main() -> None:
         "git_commit": commit,
         "device": str(device),
         "example_count": len(examples),
+        "source_example_count": source_example_count,
+        "start_index": args.start_index,
         "max_new_tokens": args.max_new_tokens,
         "chunk_tokens": args.chunk_tokens,
         "answers_used_in_prompts": False,
