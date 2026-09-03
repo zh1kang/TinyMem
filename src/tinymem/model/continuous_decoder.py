@@ -308,6 +308,7 @@ class SegmentedContinuousDecoder(nn.Module):
         forced_writes: torch.Tensor | None = None,
         initial_memory: AttentionMemory | None = None,
         position_offset: int = 0,
+        update_memory: bool = True,
     ) -> SegmentedContinuousOutput:
         """Return logits and final memory without breaking the autograd graph."""
         if not isinstance(input_ids, torch.Tensor):
@@ -360,6 +361,13 @@ class SegmentedContinuousDecoder(nn.Module):
             raise TypeError("position_offset must be an integer")
         if position_offset < 0:
             raise ValueError("position_offset must be nonnegative")
+        if not isinstance(update_memory, bool):
+            raise TypeError("update_memory must be a boolean")
+        if not update_memory and isinstance(
+            self.compressor,
+            DiscreteMemoryCompressor,
+        ):
+            raise ValueError("frozen updates are not supported for discrete codes")
         if forced_writes is not None:
             if not isinstance(forced_writes, torch.Tensor):
                 raise TypeError("forced_writes must be a torch.Tensor or None")
@@ -534,7 +542,16 @@ class SegmentedContinuousDecoder(nn.Module):
                     segment_index : segment_index + 1,
                 ].to(dtype=memory.dtype)
 
-            if self.write_gate is None and self.write_controller is None:
+            if not update_memory:
+                next_memory = memory
+                write_applied = torch.zeros(
+                    memory.shape[0],
+                    1,
+                    dtype=torch.bool,
+                    device=memory.device,
+                )
+                write_logits = None
+            elif self.write_gate is None and self.write_controller is None:
                 next_memory, memory_valid, write_applied, write_logits = self.bank(
                     memory,
                     memory_valid,

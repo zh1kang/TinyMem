@@ -122,6 +122,32 @@ def test_segmented_decoder_validates_initial_memory_shape() -> None:
         )
 
 
+def test_segmented_decoder_can_freeze_memory_during_generation() -> None:
+    decoder = make_decoder(segment_length=2, capacity=2)
+    first = decoder(
+        torch.tensor([[1, 2, 3, 4]]),
+        torch.ones(1, 4, dtype=torch.bool),
+    )
+    initial_memory = AttentionMemory(
+        values=first.memory,
+        valid=first.memory_valid,
+        positions=first.memory_positions,
+    )
+
+    generated = decoder(
+        torch.tensor([[5, 6]]),
+        torch.ones(1, 2, dtype=torch.bool),
+        initial_memory=initial_memory,
+        position_offset=4,
+        update_memory=False,
+    )
+
+    torch.testing.assert_close(generated.memory, initial_memory.values)
+    assert torch.equal(generated.memory_valid, initial_memory.valid)
+    assert torch.equal(generated.memory_positions, initial_memory.positions)
+    assert not generated.writes_applied.any()
+
+
 def test_segmented_decoder_concatenates_mtp_logits_across_segments() -> None:
     decoder = make_decoder(segment_length=2, capacity=2)
     decoder.mtp_heads = MultiTokenPredictionHeads(8, 16, (2, 3, 4))
