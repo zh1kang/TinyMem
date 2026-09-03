@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from numbers import Integral, Real
 
 import torch
+
+from tinymem.model.continuous_decoder import (
+    MemoryIntervention,
+    SegmentedContinuousDecoder,
+)
+from tinymem.training.continuous import collate_segmented_answer_supervision
+from tinymem.training.controlled_qa import EncodedQAExample
 
 
 @dataclass(frozen=True)
@@ -40,6 +48,26 @@ class AnswerabilityEvaluation:
         document = asdict(self)
         document["points"] = [point.to_dict() for point in self.points]
         return document
+
+
+@dataclass(frozen=True)
+class DecoderAnswerabilityResult:
+    """Hold raw decoder outcomes and their selective-prediction metrics."""
+
+    intervention: str
+    probabilities: tuple[float, ...]
+    correctness: tuple[bool, ...]
+    answerable: tuple[bool, ...]
+    evaluation: AnswerabilityEvaluation
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "intervention": self.intervention,
+            "probabilities": list(self.probabilities),
+            "correctness": list(self.correctness),
+            "answerable": list(self.answerable),
+            "evaluation": self.evaluation.to_dict(),
+        }
 
 
 def _validated_inputs(
@@ -223,4 +251,127 @@ def evaluate_answerability(
             )
             for threshold in thresholds
         ),
+    )
+
+
+@torch.no_grad()
+def evaluate_decoder_answerability(
+    decoder: SegmentedContinuousDecoder,
+    examples: Sequence[EncodedQAExample],
+    *,
+    batch_size: int,
+    pad_id: int,
+    device: torch.device | str,
+    intervention_name: str = "normal",
+    memory_intervention: MemoryIntervention | None = None,
+    forced_writes: torch.Tensor | None = None,
+    corrupted_memory: bool = False,
+    thresholds: tuple[float, ...] = (0.25, 0.5, 0.75),
+    calibration_bins: int = 10,
+) -> DecoderAnswerabilityResult:
+    """Evaluate answer accuracy and reliability at the answer position."""
+    if not isinstance(decoder, SegmentedContinuousDecoder):
+        raise TypeError("decoder must be a SegmentedContinuousDecoder")
+    if decoder.answerability_head is None:
+        raise ValueError("decoder must contain an answerability head")
+    if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
+        raise TypeError("examples must be a sequence")
+    if not examples:
+        raise ValueError("examples must be nonempty")
+    if not all(isinstance(example, EncodedQAExample) for example in examples):
+        raise TypeError("examples must contain EncodedQAExample values")
+    if any(example.answerable is None for example in examples):
+        raise ValueError("every example must contain an answerability label")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, Integral):
+        raise TypeError("batch_size must be an integer")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if not isinstance(intervention_name, str) or not intervention_name:
+        raise ValueError("intervention_name must be a nonempty string")
+    if memory_intervention is not None and not callable(memory_intervention):
+        raise TypeError("memory_intervention must be callable or None")
+    if not isinstance(corrupted_memory, bool):
+        raise TypeError("corrupted_memory must be a boolean")
+    if forced_writes is not None:
+        if not isinstance(forced_writes, torch.Tensor):
+            raise TypeError("forced_writes must be a torch.Tensor or None")
+        if forced_writes.ndim != 2 or forced_writes.shape[0] != len(examples):
+            raise ValueError("forced_writes must have shape [examples, segments]")
+        if forced_writes.dtype != torch.bool:
+            raise TypeError("forced_writes must be a boolean tensor")
+
+    was_training = decoder.training
+    decoder.eval()
+    probabilities: list[float] = []
+    correctness: list[bool] = []
+    answerable: list[bool] = []
+    try:
+        for start in range(0, len(examples), int(batch_size)):
+            end = min(start + int(batch_size), len(examples))
+            batch = examples[start:end]
+            input_ids, _, token_valid = collate_segmented_answer_supervision(
+                batch,
+                pad_id=pad_id,
+                device=device,
+            )
+            segment_count = (
+                input_ids.shape[1] + decoder.segment_length - 1
+            ) // decoder.segment_length
+            output = decoder(
+                input_ids,
+                token_valid,
+                memory_intervention=memory_intervention,
+                forced_writes=(
+                    forced_writes[start:end, :segment_count].to(device=device)
+                    if forced_writes is not None
+                    else None
+                ),
+            )
+            if output.answerability_logits is None:
+                raise RuntimeError("decoder did not return answerability logits")
+            rows = torch.arange(len(batch), device=input_ids.device)
+            prompt_positions = torch.tensor(
+                [len(example.input_ids) - 2 for example in batch],
+                device=input_ids.device,
+            )
+            predicted_ids = output.logits[
+                rows,
+                prompt_positions,
+            ].argmax(dim=-1)
+            probability = output.answerability_logits[
+                rows,
+                prompt_positions,
+            ].sigmoid()
+            probabilities.extend(float(value) for value in probability.cpu())
+            correctness.extend(
+                bool(prediction == example.answer_id)
+                for prediction, example in zip(
+                    predicted_ids.cpu(),
+                    batch,
+                    strict=True,
+                )
+            )
+            answerable.extend(
+                False if corrupted_memory else bool(example.answerable)
+                for example in batch
+            )
+    finally:
+        decoder.train(was_training)
+
+    probability_tensor = torch.tensor(probabilities)
+    correctness_tensor = torch.tensor(correctness, dtype=torch.bool)
+    answerable_tensor = torch.tensor(answerable, dtype=torch.bool)
+    evaluation = evaluate_answerability(
+        probability_tensor,
+        correctness_tensor,
+        answerable_tensor,
+        thresholds=thresholds,
+        calibration_bins=calibration_bins,
+    )
+    return DecoderAnswerabilityResult(
+        intervention=intervention_name,
+        probabilities=tuple(probabilities),
+        correctness=tuple(correctness),
+        answerable=tuple(answerable),
+        evaluation=evaluation,
     )
