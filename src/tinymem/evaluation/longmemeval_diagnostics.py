@@ -89,6 +89,8 @@ class LongMemEvalDiagnosticResult:
 
     condition: str
     count: int
+    source_count: int
+    skipped_missing_answer_message_labels: int
     generated_exact_accuracy: float
     generated_mean_token_f1: float
     answer_byte_nll: float
@@ -229,6 +231,8 @@ def _counterfactual_answers(
 def _aggregate_diagnostic(
     condition: str,
     predictions: Sequence[LongMemEvalDiagnosticPrediction],
+    *,
+    source_count: int,
 ) -> LongMemEvalDiagnosticResult:
     answer_total_nll = sum(
         prediction.answer_score.total_nll for prediction in predictions
@@ -247,6 +251,8 @@ def _aggregate_diagnostic(
     return LongMemEvalDiagnosticResult(
         condition=condition,
         count=count,
+        source_count=source_count,
+        skipped_missing_answer_message_labels=source_count - count,
         generated_exact_accuracy=sum(
             prediction.exact_match for prediction in predictions
         )
@@ -336,6 +342,12 @@ def evaluate_longmemeval_diagnostics(
                 counterfactuals,
                 strict=True,
             ):
+                if condition == "answer_messages" and not any(
+                    message.has_answer
+                    for session in example.sessions
+                    for message in session.messages
+                ):
+                    continue
                 prompt = format_longmemeval_diagnostic_prompt(example, condition)
                 state = stream_longmemeval_prompt(
                     decoder,
@@ -382,7 +394,17 @@ def evaluate_longmemeval_diagnostics(
                         ),
                     )
                 )
-            results.append(_aggregate_diagnostic(condition, predictions))
+            if not predictions:
+                raise ValueError(
+                    f"no examples are eligible for condition {condition!r}"
+                )
+            results.append(
+                _aggregate_diagnostic(
+                    condition,
+                    predictions,
+                    source_count=len(examples),
+                )
+            )
     finally:
         decoder.train(was_training)
     return tuple(results)

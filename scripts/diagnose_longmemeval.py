@@ -191,6 +191,11 @@ def main() -> None:
                 "example_count": len(examples),
                 "results": {
                     result.condition: {
+                        "count": result.count,
+                        "source_count": result.source_count,
+                        "skipped_missing_answer_message_labels": (
+                            result.skipped_missing_answer_message_labels
+                        ),
                         "generated_exact_accuracy": (
                             result.generated_exact_accuracy
                         ),

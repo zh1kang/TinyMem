@@ -42,7 +42,12 @@ def make_decoder() -> SegmentedContinuousDecoder:
     )
 
 
-def make_example(question_id: str, answer: str) -> LongMemEvalExample:
+def make_example(
+    question_id: str,
+    answer: str,
+    *,
+    answer_message_marked: bool = True,
+) -> LongMemEvalExample:
     return LongMemEvalExample(
         question_id=question_id,
         question_type="knowledge-update",
@@ -58,7 +63,13 @@ def make_example(question_id: str, answer: str) -> LongMemEvalExample:
             LongMemSession(
                 "s2",
                 "2024-01-02",
-                (LongMemMessage("user", f"Now it is {answer}.", True),),
+                (
+                    LongMemMessage(
+                        "user",
+                        f"Now it is {answer}.",
+                        answer_message_marked,
+                    ),
+                ),
             ),
         ),
         answer_session_ids=("s2",),
@@ -143,6 +154,32 @@ def test_diagnostics_return_all_condition_metrics_deterministically() -> None:
     assert first[-1].reference_inserted
     assert first[1].uses_answer_message_labels
     assert not first[2].uses_oracle_evidence
+
+
+def test_answer_message_condition_reports_missing_label_coverage() -> None:
+    examples = [
+        make_example("q1", "blue"),
+        make_example("q2", "green"),
+        make_example("q3", "yellow", answer_message_marked=False),
+    ]
+
+    results = evaluate_longmemeval_diagnostics(
+        make_decoder(),
+        examples,
+        device="cpu",
+        max_new_tokens=2,
+        chunk_tokens=16,
+    )
+    by_condition = {result.condition: result for result in results}
+
+    assert by_condition["full_oracle"].count == 3
+    assert by_condition["full_oracle"].skipped_missing_answer_message_labels == 0
+    assert by_condition["answer_messages"].count == 2
+    assert by_condition["answer_messages"].source_count == 3
+    assert (
+        by_condition["answer_messages"].skipped_missing_answer_message_labels
+        == 1
+    )
 
 
 def test_diagnostics_require_distinct_answers() -> None:
