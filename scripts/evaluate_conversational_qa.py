@@ -22,6 +22,10 @@ from tinymem.utils.seed import seed_everything
 
 
 TASKS = ("qa1", "qa2", "qa3", "qa4", "qa5")
+UPDATE_TEST_DELETION_RATE = 0.25
+UPDATE_TEST_QUERY_DELAY = 4
+UPDATE_TEST_DISTRACTOR_COUNT = 4
+UPDATE_TEST_CORRECTION_COUNTS = (3, 4)
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,6 +83,48 @@ def load_babi_test_examples(
     return selected
 
 
+def build_babi_provenance(
+    repository_root: Path,
+    *,
+    tasks: tuple[str, ...],
+    examples: list[ReasoningExample],
+) -> dict[str, object]:
+    """Fingerprint the manifest, source revision, and evaluated test files."""
+    manifest_path = repository_root / "data/manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        dataset = manifest["datasets"]["babi"]
+        revision = dataset["revision"]
+        source = dataset["source"]
+    except (KeyError, TypeError) as error:
+        raise ValueError("dataset manifest is missing bAbI provenance") from error
+    if not isinstance(revision, str) or not revision:
+        raise ValueError("bAbI revision must be a nonempty string")
+    if not isinstance(source, str) or not source:
+        raise ValueError("bAbI source must be a nonempty string")
+
+    data_root = repository_root / "data/raw/tasks_1-20_v1-2/en-valid-10k"
+    return {
+        "revision": revision,
+        "source": source,
+        "manifest_path": str(manifest_path.relative_to(repository_root)),
+        "manifest_sha256": _sha256(manifest_path),
+        "test_files": [
+            {
+                "task": task,
+                "path": str(
+                    (data_root / f"{task}_test.txt").relative_to(repository_root)
+                ),
+                "sha256": _sha256(data_root / f"{task}_test.txt"),
+                "selected_examples": sum(
+                    example.task_id == task for example in examples
+                ),
+            }
+            for task in tasks
+        ],
+    }
+
+
 def main() -> None:
     args = parse_args()
     for name in ("update_test_examples", "max_new_tokens", "chunk_tokens"):
@@ -112,6 +158,10 @@ def main() -> None:
             split="test",
             count=args.update_test_examples,
             base_seed=args.seed,
+            deletion_rate=UPDATE_TEST_DELETION_RATE,
+            query_delay=UPDATE_TEST_QUERY_DELAY,
+            distractor_count=UPDATE_TEST_DISTRACTOR_COUNT,
+            correction_counts=UPDATE_TEST_CORRECTION_COUNTS,
         )
     )
     tokenizer = ByteTokenizer()
@@ -143,7 +193,21 @@ def main() -> None:
         "architecture": loaded.architecture,
         "tasks": list(tasks),
         "babi_examples_per_task": args.examples_per_task,
+        "babi_provenance": build_babi_provenance(
+            repository_root,
+            tasks=tasks,
+            examples=examples,
+        ),
         "update_test_examples": args.update_test_examples,
+        "update_generation": {
+            "split": "test",
+            "count": args.update_test_examples,
+            "base_seed": args.seed,
+            "deletion_rate": UPDATE_TEST_DELETION_RATE,
+            "query_delay": UPDATE_TEST_QUERY_DELAY,
+            "distractor_count": UPDATE_TEST_DISTRACTOR_COUNT,
+            "correction_counts": list(UPDATE_TEST_CORRECTION_COUNTS),
+        },
         "example_count": len(encoded),
         "longmemeval_examples": 0,
         "evaluation": evaluation.to_dict(),
