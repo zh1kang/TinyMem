@@ -81,6 +81,16 @@ class LongMemEvalResult:
         }
 
 
+@dataclass(frozen=True)
+class LongMemEvalPromptState:
+    """Hold the frozen state produced by one complete evaluation prompt."""
+
+    memory: AttentionMemory
+    position: int
+    next_logits: torch.Tensor
+    context_bytes: int
+
+
 def format_longmemeval_prompt(example: LongMemEvalExample) -> str:
     """Format sessions in source order without exposing the reference answer."""
     if not isinstance(example, LongMemEvalExample):
@@ -132,30 +142,29 @@ def _memory_from_output(
 
 
 @torch.no_grad()
-def generate_longmemeval_answer(
+def stream_longmemeval_prompt(
     decoder: SegmentedContinuousDecoder,
     tokenizer: ByteTokenizer,
-    example: LongMemEvalExample,
+    prompt: str,
     *,
     device: torch.device | str,
-    max_new_tokens: int,
     chunk_tokens: int,
     query_memory_intervention: MemoryIntervention | None = None,
     update_memory: bool = True,
-) -> tuple[str, int]:
-    """Stream one ordered prompt and greedily generate a bounded answer."""
+) -> LongMemEvalPromptState:
+    """Stream one prompt and return its frozen memory and next-token state."""
     if not isinstance(decoder, SegmentedContinuousDecoder):
         raise TypeError("decoder must be a SegmentedContinuousDecoder")
     if not isinstance(tokenizer, ByteTokenizer):
         raise TypeError("tokenizer must be a ByteTokenizer")
-    for name, value in (
-        ("max_new_tokens", max_new_tokens),
-        ("chunk_tokens", chunk_tokens),
-    ):
-        if isinstance(value, bool) or not isinstance(value, Integral):
-            raise TypeError(f"{name} must be an integer")
-    if max_new_tokens <= 0 or chunk_tokens <= 0:
-        raise ValueError("generation counts must be positive")
+    if not isinstance(prompt, str):
+        raise TypeError("prompt must be a string")
+    if not prompt:
+        raise ValueError("prompt must be nonempty")
+    if isinstance(chunk_tokens, bool) or not isinstance(chunk_tokens, Integral):
+        raise TypeError("chunk_tokens must be an integer")
+    if chunk_tokens <= 0:
+        raise ValueError("chunk_tokens must be positive")
     if chunk_tokens % decoder.segment_length != 0:
         raise ValueError("chunk_tokens must be a multiple of segment_length")
     if query_memory_intervention is not None and not callable(
@@ -165,7 +174,7 @@ def generate_longmemeval_answer(
     if not isinstance(update_memory, bool):
         raise TypeError("update_memory must be a boolean")
 
-    prompt_ids = tokenizer.encode(format_longmemeval_prompt(example))
+    prompt_ids = tokenizer.encode(prompt)
     memory = None
     position = 0
     next_logits = None
@@ -242,7 +251,38 @@ def generate_longmemeval_answer(
     position += final_chunk.shape[1]
     next_logits = output.logits[:, -1]
 
-    frozen_memory = memory
+    return LongMemEvalPromptState(
+        memory=memory,
+        position=position,
+        next_logits=next_logits,
+        context_bytes=len(prompt_ids),
+    )
+
+
+@torch.no_grad()
+def generate_longmemeval_from_state(
+    decoder: SegmentedContinuousDecoder,
+    tokenizer: ByteTokenizer,
+    state: LongMemEvalPromptState,
+    *,
+    device: torch.device | str,
+    max_new_tokens: int,
+) -> str:
+    """Greedily generate an answer from a frozen prompt state."""
+    if not isinstance(decoder, SegmentedContinuousDecoder):
+        raise TypeError("decoder must be a SegmentedContinuousDecoder")
+    if not isinstance(tokenizer, ByteTokenizer):
+        raise TypeError("tokenizer must be a ByteTokenizer")
+    if not isinstance(state, LongMemEvalPromptState):
+        raise TypeError("state must be a LongMemEvalPromptState")
+    if isinstance(max_new_tokens, bool) or not isinstance(max_new_tokens, Integral):
+        raise TypeError("max_new_tokens must be an integer")
+    if max_new_tokens <= 0:
+        raise ValueError("max_new_tokens must be positive")
+
+    frozen_memory = state.memory
+    position = state.position
+    next_logits = state.next_logits
     generated: list[int] = []
     for _ in range(int(max_new_tokens)):
         next_id = int(next_logits.argmax(dim=-1))
@@ -264,7 +304,39 @@ def generate_longmemeval_answer(
             update_memory=False,
         )
         next_logits = output.logits[:, -1]
-    return bytes(generated).decode("utf-8", errors="replace").strip(), len(prompt_ids)
+    return bytes(generated).decode("utf-8", errors="replace").strip()
+
+
+@torch.no_grad()
+def generate_longmemeval_answer(
+    decoder: SegmentedContinuousDecoder,
+    tokenizer: ByteTokenizer,
+    example: LongMemEvalExample,
+    *,
+    device: torch.device | str,
+    max_new_tokens: int,
+    chunk_tokens: int,
+    query_memory_intervention: MemoryIntervention | None = None,
+    update_memory: bool = True,
+) -> tuple[str, int]:
+    """Stream one ordered prompt and greedily generate a bounded answer."""
+    state = stream_longmemeval_prompt(
+        decoder,
+        tokenizer,
+        format_longmemeval_prompt(example),
+        device=device,
+        chunk_tokens=chunk_tokens,
+        query_memory_intervention=query_memory_intervention,
+        update_memory=update_memory,
+    )
+    prediction = generate_longmemeval_from_state(
+        decoder,
+        tokenizer,
+        state,
+        device=device,
+        max_new_tokens=max_new_tokens,
+    )
+    return prediction, state.context_bytes
 
 
 def _aggregate(

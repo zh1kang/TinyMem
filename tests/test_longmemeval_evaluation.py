@@ -9,9 +9,11 @@ from tinymem.evaluation.longmemeval import (
     answer_token_f1,
     evaluate_longmemeval,
     format_longmemeval_prompt,
+    generate_longmemeval_from_state,
     is_abstention,
     normalized_answer,
     generate_longmemeval_answer,
+    stream_longmemeval_prompt,
 )
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.memory.continuous import MeanPoolMemoryCompressor
@@ -112,3 +114,38 @@ def test_query_memory_intervention_is_applied_once() -> None:
     )
 
     assert calls == 1
+
+
+def test_prompt_state_reproduces_public_generation() -> None:
+    decoder = make_decoder()
+    tokenizer = ByteTokenizer()
+    example = make_example()
+    prompt = format_longmemeval_prompt(example)
+
+    state = stream_longmemeval_prompt(
+        decoder,
+        tokenizer,
+        prompt,
+        device="cpu",
+        chunk_tokens=16,
+    )
+    from_state = generate_longmemeval_from_state(
+        decoder,
+        tokenizer,
+        state,
+        device="cpu",
+        max_new_tokens=2,
+    )
+    public, context_bytes = generate_longmemeval_answer(
+        decoder,
+        tokenizer,
+        example,
+        device="cpu",
+        max_new_tokens=2,
+        chunk_tokens=16,
+    )
+
+    assert from_state == public
+    assert state.context_bytes == context_bytes
+    assert state.position == context_bytes
+    assert state.next_logits.shape == (1, tokenizer.vocab_size)
