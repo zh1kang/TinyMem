@@ -89,6 +89,9 @@ class LongMemEvalPromptState:
     position: int
     next_logits: torch.Tensor
     context_bytes: int
+    continuation_memory: AttentionMemory
+    continuation_position: int
+    continuation_ids: tuple[int, ...]
 
 
 def format_longmemeval_prompt(example: LongMemEvalExample) -> str:
@@ -231,8 +234,11 @@ def stream_longmemeval_prompt(
             raise TypeError(
                 "query_memory_intervention must return AttentionMemory"
             )
+    continuation_memory = memory
+    continuation_position = position
+    continuation_ids = tuple(prompt_ids[final_segment_start:])
     final_chunk = torch.tensor(
-        prompt_ids[final_segment_start:],
+        continuation_ids,
         dtype=torch.long,
         device=device,
     ).unsqueeze(0)
@@ -256,6 +262,9 @@ def stream_longmemeval_prompt(
         position=position,
         next_logits=next_logits,
         context_bytes=len(prompt_ids),
+        continuation_memory=continuation_memory,
+        continuation_position=continuation_position,
+        continuation_ids=continuation_ids,
     )
 
 
@@ -280,8 +289,6 @@ def generate_longmemeval_from_state(
     if max_new_tokens <= 0:
         raise ValueError("max_new_tokens must be positive")
 
-    frozen_memory = state.memory
-    position = state.position
     next_logits = state.next_logits
     generated: list[int] = []
     for _ in range(int(max_new_tokens)):
@@ -291,17 +298,16 @@ def generate_longmemeval_from_state(
         if not 0 <= next_id <= 255:
             break
         generated.append(next_id)
-        prefix = torch.tensor(
-            generated,
+        continuation = torch.tensor(
+            state.continuation_ids + tuple(generated),
             dtype=torch.long,
             device=device,
         ).unsqueeze(0)
         output = decoder(
-            prefix,
-            torch.ones_like(prefix, dtype=torch.bool),
-            initial_memory=frozen_memory,
-            position_offset=position,
-            update_memory=False,
+            continuation,
+            torch.ones_like(continuation, dtype=torch.bool),
+            initial_memory=state.continuation_memory,
+            position_offset=state.continuation_position,
         )
         next_logits = output.logits[:, -1]
     return bytes(generated).decode("utf-8", errors="replace").strip()

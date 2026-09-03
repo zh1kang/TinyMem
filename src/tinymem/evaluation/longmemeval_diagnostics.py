@@ -181,15 +181,20 @@ def score_candidate_answer(
     ).unsqueeze(0)
     logits = state.next_logits.unsqueeze(1)
     if targets.shape[1] > 1:
-        prefix = targets[:, :-1]
+        continuation_ids = torch.tensor(
+            state.continuation_ids,
+            dtype=torch.long,
+            device=device,
+        ).unsqueeze(0)
+        continuation = torch.cat((continuation_ids, targets[:, :-1]), dim=1)
         output = decoder(
-            prefix,
-            torch.ones_like(prefix, dtype=torch.bool),
-            initial_memory=state.memory,
-            position_offset=state.position,
-            update_memory=False,
+            continuation,
+            torch.ones_like(continuation, dtype=torch.bool),
+            initial_memory=state.continuation_memory,
+            position_offset=state.continuation_position,
         )
-        logits = torch.cat((logits, output.logits[:, : prefix.shape[1]]), dim=1)
+        suffix_logits = output.logits[:, len(state.continuation_ids) :]
+        logits = torch.cat((logits, suffix_logits), dim=1)
 
     losses = F.cross_entropy(
         logits.reshape(-1, logits.shape[-1]),

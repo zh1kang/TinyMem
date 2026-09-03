@@ -9,7 +9,10 @@ from tinymem.data.longmemeval import (
     LongMemMessage,
     LongMemSession,
 )
-from tinymem.evaluation.longmemeval import LongMemEvalPromptState
+from tinymem.evaluation.longmemeval import (
+    LongMemEvalPromptState,
+    stream_longmemeval_prompt,
+)
 from tinymem.evaluation.longmemeval_diagnostics import (
     DIAGNOSTIC_CONDITIONS,
     evaluate_longmemeval_diagnostics,
@@ -80,15 +83,19 @@ def make_example(
 def empty_prompt_state(tokenizer: ByteTokenizer) -> LongMemEvalPromptState:
     next_logits = torch.full((1, tokenizer.vocab_size), -10.0)
     next_logits[0, ord("A")] = 10.0
+    memory = AttentionMemory(
+        values=torch.zeros(1, 2, 8),
+        valid=torch.zeros(1, 2, dtype=torch.bool),
+        positions=torch.full((1, 2), -1, dtype=torch.long),
+    )
     return LongMemEvalPromptState(
-        memory=AttentionMemory(
-            values=torch.zeros(1, 2, 8),
-            valid=torch.zeros(1, 2, dtype=torch.bool),
-            positions=torch.full((1, 2), -1, dtype=torch.long),
-        ),
+        memory=memory,
         position=1,
         next_logits=next_logits,
         context_bytes=1,
+        continuation_memory=memory,
+        continuation_position=0,
+        continuation_ids=(ord("?"),),
     )
 
 
@@ -144,13 +151,17 @@ def test_candidate_scoring_aligns_multiple_bytes_across_segments() -> None:
 
     sequential_logits = [state.next_logits]
     for target_index in range(1, targets.numel()):
-        prefix = targets[:target_index].unsqueeze(0)
+        continuation = torch.cat(
+            (
+                torch.tensor(state.continuation_ids, dtype=torch.long),
+                targets[:target_index],
+            )
+        ).unsqueeze(0)
         output = decoder(
-            prefix,
-            torch.ones_like(prefix, dtype=torch.bool),
-            initial_memory=state.memory,
-            position_offset=state.position,
-            update_memory=False,
+            continuation,
+            torch.ones_like(continuation, dtype=torch.bool),
+            initial_memory=state.continuation_memory,
+            position_offset=state.continuation_position,
         )
         sequential_logits.append(output.logits[:, -1])
     expected_logits = torch.stack(sequential_logits, dim=1)
@@ -166,6 +177,48 @@ def test_candidate_scoring_aligns_multiple_bytes_across_segments() -> None:
     assert score.total_nll == pytest.approx(float(expected_nll.detach()))
     assert score.first_byte_correct == bool(matches[0])
     assert score.greedy_prefix_bytes == expected_prefix
+
+
+def test_candidate_scoring_preserves_the_final_prompt_segment() -> None:
+    torch.manual_seed(13)
+    decoder = make_decoder()
+    tokenizer = ByteTokenizer()
+    prompt = "prompt-crossing-a-segment:"
+    candidate = "answer-crossing-a-segment"
+    state = stream_longmemeval_prompt(
+        decoder,
+        tokenizer,
+        prompt,
+        device="cpu",
+        chunk_tokens=16,
+    )
+
+    score = score_candidate_answer(
+        decoder,
+        tokenizer,
+        state,
+        candidate,
+        device="cpu",
+    )
+
+    prompt_ids = tokenizer.encode(prompt)
+    candidate_ids = tokenizer.encode(candidate)
+    sequence = torch.tensor(
+        prompt_ids + candidate_ids[:-1],
+        dtype=torch.long,
+    ).unsqueeze(0)
+    output = decoder(sequence, torch.ones_like(sequence, dtype=torch.bool))
+    expected_logits = output.logits[
+        :,
+        len(prompt_ids) - 1 : len(prompt_ids) + len(candidate_ids) - 1,
+    ]
+    expected_nll = F.cross_entropy(
+        expected_logits.squeeze(0),
+        torch.tensor(candidate_ids, dtype=torch.long),
+        reduction="sum",
+    )
+
+    assert score.total_nll == pytest.approx(float(expected_nll.detach()))
 
 
 def test_diagnostics_return_all_condition_metrics_deterministically() -> None:

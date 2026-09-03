@@ -149,3 +149,8 @@ def test_prompt_state_reproduces_public_generation() -> None:
     assert state.context_bytes == context_bytes
     assert state.position == context_bytes
     assert state.next_logits.shape == (1, tokenizer.vocab_size)
+    assert state.continuation_ids
+    assert (
+        state.continuation_position + len(state.continuation_ids)
+        == state.position
+    )
