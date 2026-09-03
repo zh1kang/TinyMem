@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 import matplotlib
@@ -29,6 +30,7 @@ from tinymem.model.multi_token_prediction import MultiTokenPredictionHeads
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.checkpointing import save_checkpoint
 from tinymem.training.controlled_qa import (
+    answer_cross_entropy,
     answer_accuracy,
     build_qa_vocabulary,
     encode_qa_examples,
@@ -57,6 +59,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-heads", type=int, default=4)
     parser.add_argument("--d-ff", type=int, default=256)
     parser.add_argument("--local-window", type=int, default=128)
+    parser.add_argument(
+        "--attention-type",
+        choices=("mha", "mla_lite"),
+        default="mha",
+    )
+    parser.add_argument("--kv-latent-dim", type=int)
+    parser.add_argument(
+        "--babilong-lengths",
+        nargs="+",
+        default=("1k", "2k", "4k", "8k"),
+    )
+    parser.add_argument("--max-babilong-examples-per-length", type=int)
     parser.add_argument("--mtp-horizons", type=int, nargs="*", default=())
     parser.add_argument("--mtp-loss-weight", type=float, default=0.2)
     parser.add_argument(
@@ -136,6 +150,8 @@ def main() -> None:
         n_heads=args.n_heads,
         d_ff=args.d_ff,
         max_local_tokens=args.local_window,
+        attention_type=args.attention_type,
+        kv_latent_dim=args.kv_latent_dim,
     )
     config = ExperimentConfig(
         seed=args.seed,
@@ -186,6 +202,7 @@ def main() -> None:
         if mtp_heads is not None
         else None
     )
+    training_started = time.perf_counter()
     losses = train_answer_supervision(
         model,
         optimizer,
@@ -199,6 +216,7 @@ def main() -> None:
         mtp_heads=mtp_heads,
         mtp_loss_weight=(mtp_config.loss_weight if mtp_heads is not None else 0.0),
     )
+    training_seconds = time.perf_counter() - training_started
     auxiliary_loss_after = (
         evaluate_base_mtp_loss(
             model,
@@ -218,16 +236,30 @@ def main() -> None:
         pad_id=vocabulary.token_to_id["<pad>"],
         device=device,
     )
+    validation_loss = answer_cross_entropy(
+        model,
+        encoded_validation,
+        batch_size=args.batch_size,
+        pad_id=vocabulary.token_to_id["<pad>"],
+        device=device,
+    )
 
     babilong_examples = []
-    for context_length in ("1k", "2k", "4k", "8k"):
-        babilong_examples.extend(
-            load_babilong_file(
-                repository_root / f"data/raw/babilong/qa1/{context_length}.json",
-                task_id="qa1",
-                split="test",
-            )
+    for context_length in args.babilong_lengths:
+        loaded_examples = load_babilong_file(
+            repository_root / f"data/raw/babilong/qa1/{context_length}.json",
+            task_id="qa1",
+            split="test",
         )
+        if args.max_babilong_examples_per_length is not None:
+            if args.max_babilong_examples_per_length <= 0:
+                raise ValueError(
+                    "max_babilong_examples_per_length must be positive"
+                )
+            loaded_examples = loaded_examples[
+                : args.max_babilong_examples_per_length
+            ]
+        babilong_examples.extend(loaded_examples)
     curve = evaluate_local_forgetting_curve(
         model,
         vocabulary,
@@ -235,6 +267,19 @@ def main() -> None:
         batch_size=args.batch_size,
         device=device,
     )
+
+    cache_probe = model.create_caches()
+    with torch.no_grad():
+        model(
+            torch.full(
+                (1, args.local_window),
+                vocabulary.token_to_id["<bos>"],
+                dtype=torch.long,
+                device=device,
+            ),
+            caches=cache_probe,
+        )
+    cache_bytes = sum(cache.nbytes for cache in cache_probe)
 
     commit = current_git_commit(repository_root)
     run_directory = create_run_directory(
@@ -258,11 +303,21 @@ def main() -> None:
         "skipped_validation_examples": skipped_validation,
         "final_training_loss": losses[-1],
         "validation_accuracy": validation_accuracy,
+        "validation_loss": validation_loss,
+        "attention_type": model_config.attention_type,
+        "kv_latent_dim": model_config.kv_latent_dim,
+        "cache_bytes_batch1_full_window": cache_bytes,
+        "parameter_count": sum(
+            parameter.numel() for parameter in model.parameters()
+        ),
+        "training_seconds": training_seconds,
         "mtp_horizons": list(mtp_config.horizons) if mtp_heads is not None else [],
         "mtp_loss_weight": mtp_config.loss_weight if mtp_heads is not None else 0.0,
         "auxiliary_loss_before": auxiliary_loss_before,
         "auxiliary_loss_after": auxiliary_loss_after,
         "curve": curve_records,
+        "babilong_lengths": list(args.babilong_lengths),
+        "babilong_examples": len(babilong_examples),
     }
     (run_directory / "results.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n",

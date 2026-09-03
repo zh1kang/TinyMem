@@ -276,3 +276,42 @@ def answer_accuracy(
     finally:
         model.train(was_training)
     return correct / len(examples)
+
+
+@torch.no_grad()
+def answer_cross_entropy(
+    model: DecoderOnlyTransformer,
+    examples: Sequence[EncodedQAExample],
+    *,
+    batch_size: int,
+    pad_id: int,
+    device: torch.device | str,
+) -> float:
+    """Measure mean held-out next-token loss at controlled answer positions."""
+    if not isinstance(model, DecoderOnlyTransformer):
+        raise TypeError("model must be a DecoderOnlyTransformer")
+    if not examples:
+        raise ValueError("examples must be nonempty")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int):
+        raise TypeError("batch_size must be an integer")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+    was_training = model.training
+    model.eval()
+    total_loss = 0.0
+    total_answers = 0
+    try:
+        for start in range(0, len(examples), batch_size):
+            batch = examples[start : start + batch_size]
+            input_ids, target_ids = collate_answer_supervision(
+                batch,
+                pad_id=pad_id,
+                device=device,
+            )
+            loss = next_token_cross_entropy(model(input_ids), target_ids)
+            total_loss += float(loss.cpu()) * len(batch)
+            total_answers += len(batch)
+    finally:
+        model.train(was_training)
+    return total_loss / total_answers
