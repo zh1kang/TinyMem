@@ -247,3 +247,90 @@ def evaluate_segmented_language_model(
         perplexity=math.exp(mean_loss),
         predicted_tokens=predicted_tokens,
     )
+
+
+@torch.no_grad()
+def evaluate_streaming_language_model(
+    decoder: SegmentedContinuousDecoder,
+    token_ids: torch.Tensor,
+    *,
+    chunk_tokens: int,
+    device: torch.device | str,
+    max_tokens: int | None = None,
+    memory_intervention: MemoryIntervention | None = None,
+) -> LanguageModelEvaluation:
+    """Score one ordered stream while carrying memory across chunks."""
+    if not isinstance(decoder, SegmentedContinuousDecoder):
+        raise TypeError("decoder must be a SegmentedContinuousDecoder")
+    _validate_token_stream(token_ids, vocab_size=decoder.model.config.vocab_size)
+    if isinstance(chunk_tokens, bool) or not isinstance(chunk_tokens, Integral):
+        raise TypeError("chunk_tokens must be an integer")
+    if chunk_tokens <= 0:
+        raise ValueError("chunk_tokens must be positive")
+    if chunk_tokens % decoder.segment_length != 0:
+        raise ValueError("chunk_tokens must be a multiple of segment_length")
+    if max_tokens is not None:
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, Integral):
+            raise TypeError("max_tokens must be an integer or None")
+        if max_tokens < 2:
+            raise ValueError("max_tokens must exceed one")
+        token_ids = token_ids[: int(max_tokens)]
+    if memory_intervention is not None and not callable(memory_intervention):
+        raise TypeError("memory_intervention must be callable or None")
+
+    was_training = decoder.training
+    decoder.eval()
+    memory = None
+    previous_logits = None
+    position = 0
+    total_loss = 0.0
+    predicted_tokens = 0
+    try:
+        for start in range(0, token_ids.numel(), int(chunk_tokens)):
+            chunk = token_ids[start : start + int(chunk_tokens)].to(
+                device=device
+            ).unsqueeze(0)
+            output = decoder(
+                chunk,
+                torch.ones_like(chunk, dtype=torch.bool),
+                initial_memory=memory,
+                position_offset=position,
+                memory_intervention=memory_intervention,
+            )
+            if previous_logits is not None:
+                boundary_loss = F.cross_entropy(
+                    previous_logits,
+                    chunk[:, 0],
+                    reduction="sum",
+                )
+                total_loss += float(boundary_loss.cpu())
+                predicted_tokens += 1
+            if chunk.shape[1] > 1:
+                interior_loss = F.cross_entropy(
+                    output.logits[:, :-1].reshape(
+                        -1,
+                        decoder.model.config.vocab_size,
+                    ),
+                    chunk[:, 1:].reshape(-1),
+                    reduction="sum",
+                )
+                total_loss += float(interior_loss.cpu())
+                predicted_tokens += chunk.shape[1] - 1
+            memory = AttentionMemory(
+                values=output.memory,
+                valid=output.memory_valid,
+                positions=output.memory_positions,
+            )
+            previous_logits = output.logits[:, -1]
+            position += chunk.shape[1]
+    finally:
+        decoder.train(was_training)
+
+    if predicted_tokens != token_ids.numel() - 1:
+        raise RuntimeError("streaming evaluation did not score every transition")
+    mean_loss = total_loss / predicted_tokens
+    return LanguageModelEvaluation(
+        loss=mean_loss,
+        perplexity=math.exp(mean_loss),
+        predicted_tokens=predicted_tokens,
+    )

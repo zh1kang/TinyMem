@@ -32,6 +32,7 @@ from tinymem.training.checkpointing import save_checkpoint
 from tinymem.training.language_model import (
     LanguageModelEvaluation,
     evaluate_segmented_language_model,
+    evaluate_streaming_language_model,
     train_segmented_language_model,
 )
 from tinymem.utils.device import select_device
@@ -239,7 +240,7 @@ def main() -> None:
             memory_intervention=zero_memory,
         ),
     }
-    long_range_validation = evaluate_segmented_language_model(
+    within_sequence_final_segment_validation = evaluate_segmented_language_model(
         decoder,
         token_streams["validation"],
         sequence_length=args.sequence_length,
@@ -249,12 +250,26 @@ def main() -> None:
         max_tokens=max_validation_tokens,
         final_segment_only=True,
     )
-    test = evaluate_segmented_language_model(
+    streaming_validation = evaluate_streaming_language_model(
+        decoder,
+        token_streams["validation"],
+        chunk_tokens=args.sequence_length,
+        device=device,
+        max_tokens=max_validation_tokens,
+    )
+    windowed_test = evaluate_segmented_language_model(
         decoder,
         token_streams["test"],
         sequence_length=args.sequence_length,
         batch_size=args.evaluation_batch_size,
         pad_id=tokenizer.special_tokens["<pad>"],
+        device=device,
+        max_tokens=max_test_tokens,
+    )
+    streaming_test = evaluate_streaming_language_model(
+        decoder,
+        token_streams["test"],
+        chunk_tokens=args.sequence_length,
         device=device,
         max_tokens=max_test_tokens,
     )
@@ -272,9 +287,9 @@ def main() -> None:
     )
     result_document = {
         "status": (
-            "development_single_seed"
+            "development_single_seed_capped_test"
             if max_test_tokens is not None
-            else "single_seed_full_test"
+            else "development_single_seed_full_test"
         ),
         "dataset": "wikitext-2-raw-v1",
         "seed": args.seed,
@@ -297,8 +312,12 @@ def main() -> None:
             name: result.to_dict()
             for name, result in validation_ablations.items()
         },
-        "long_range_validation": long_range_validation.to_dict(),
-        "test": test.to_dict(),
+        "within_sequence_final_segment_validation": (
+            within_sequence_final_segment_validation.to_dict()
+        ),
+        "streaming_validation": streaming_validation.to_dict(),
+        "windowed_test": windowed_test.to_dict(),
+        "streaming_test": streaming_test.to_dict(),
     }
     (run_directory / "results.json").write_text(
         json.dumps(result_document, indent=2, sort_keys=True) + "\n",

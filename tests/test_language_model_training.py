@@ -10,6 +10,7 @@ from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.training.language_model import (
     evaluate_segmented_language_model,
+    evaluate_streaming_language_model,
     sample_language_model_batch,
     train_segmented_language_model,
 )
@@ -106,3 +107,19 @@ def test_language_model_evaluation_reports_weighted_perplexity() -> None:
     assert normal.perplexity == math.exp(normal.loss)
     assert 0 < ablated.predicted_tokens < normal.predicted_tokens
     assert math.isfinite(ablated.loss)
+
+
+def test_streaming_language_model_carries_state_and_scores_boundaries() -> None:
+    decoder = make_decoder()
+    stream = torch.arange(30) % 32
+
+    result = evaluate_streaming_language_model(
+        decoder,
+        stream,
+        chunk_tokens=8,
+        device="cpu",
+    )
+
+    assert result.predicted_tokens == 29
+    assert result.perplexity == math.exp(result.loss)
+    assert math.isfinite(result.loss)
