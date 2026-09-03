@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
 import matplotlib
@@ -58,6 +59,7 @@ def parse_args() -> argparse.Namespace:
         default=("normal",),
     )
     parser.add_argument("--max-examples", type=int, default=0)
+    parser.add_argument("--examples-per-type", type=int, default=0)
     parser.add_argument("--max-new-tokens", type=int, default=64)
     parser.add_argument("--chunk-tokens", type=int, default=512)
     parser.add_argument(
@@ -155,10 +157,24 @@ def main() -> None:
     )
     dataset_path = repository_root / "data/raw/longmemeval" / dataset_name
     examples = load_longmemeval_file(dataset_path)
+    if args.max_examples and args.examples_per_type:
+        raise ValueError(
+            "max_examples and examples_per_type are mutually exclusive"
+        )
     if args.max_examples:
         if args.max_examples < 0:
             raise ValueError("max_examples must be nonnegative")
         examples = examples[: args.max_examples]
+    if args.examples_per_type:
+        if args.examples_per_type < 0:
+            raise ValueError("examples_per_type must be nonnegative")
+        selected = []
+        counts: Counter[str] = Counter()
+        for example in examples:
+            if counts[example.question_type] < args.examples_per_type:
+                selected.append(example)
+                counts[example.question_type] += 1
+        examples = selected
     if not examples:
         raise ValueError("no LongMemEval examples were selected")
 
@@ -198,7 +214,9 @@ def main() -> None:
     result_document = {
         "status": (
             "frozen_full_external_test"
-            if args.max_examples == 0 and args.dataset_variant == "small"
+            if args.max_examples == 0
+            and args.examples_per_type == 0
+            and args.dataset_variant == "small"
             else "development_external_evaluation"
         ),
         "dataset": "LongMemEval cleaned",
