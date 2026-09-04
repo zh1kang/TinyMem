@@ -26,6 +26,8 @@ DISTRACTOR_TEXT_BANKS = {
     "trained": TRAINED_DISTRACTOR_TEXTS,
     "heldout": HELDOUT_DISTRACTOR_TEXTS,
 }
+DISTRACTOR_VARIANTS = (*DISTRACTOR_TEXT_BANKS, "matched")
+SUPPORT_POSITION_MODES = ("first", "cycled")
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ class MemoryRequiredQAExample:
     split: str
     distractor_ids: tuple[tuple[int, ...], ...] = ()
     distractor_variant: str = "trained"
+    support_segment_index: int = 0
 
     def __post_init__(self) -> None:
         for name in ("support_ids", "query_ids", "answer_ids"):
@@ -84,10 +87,24 @@ class MemoryRequiredQAExample:
                 raise ValueError(f"{name} must be a nonempty string")
         if not isinstance(self.distractor_variant, str):
             raise TypeError("distractor_variant must be a string")
-        if self.distractor_variant not in DISTRACTOR_TEXT_BANKS:
+        if self.distractor_variant not in DISTRACTOR_VARIANTS:
             raise ValueError(
-                f"distractor_variant must be one of {tuple(DISTRACTOR_TEXT_BANKS)}"
+                f"distractor_variant must be one of {DISTRACTOR_VARIANTS}"
             )
+        if isinstance(self.support_segment_index, bool) or not isinstance(
+            self.support_segment_index,
+            Integral,
+        ):
+            raise TypeError("support_segment_index must be an integer")
+        if not 0 <= self.support_segment_index <= len(self.distractor_ids):
+            raise ValueError("support_segment_index is out of range")
+
+    @property
+    def prefix_ids(self) -> tuple[tuple[int, ...], ...]:
+        """Return support and distractors in their physical segment order."""
+        segments = list(self.distractor_ids)
+        segments.insert(int(self.support_segment_index), self.support_ids)
+        return tuple(segments)
 
     @property
     def query_position_offset(self) -> int:
@@ -120,8 +137,9 @@ def build_memory_required_qa_examples(
     segment_length: int,
     distractor_segments: int = 0,
     distractor_variant: str = "trained",
+    support_position_mode: str = "first",
 ) -> list[MemoryRequiredQAExample]:
-    """Place qa1 evidence, neutral distractors, and the query in separate segments."""
+    """Place qa1 evidence, distractors, and the query in separate segments."""
     if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
         raise TypeError("examples must be a sequence")
     if not examples or not all(
@@ -143,14 +161,21 @@ def build_memory_required_qa_examples(
         raise ValueError("distractor_segments must be nonnegative")
     if not isinstance(distractor_variant, str):
         raise TypeError("distractor_variant must be a string")
-    if distractor_variant not in DISTRACTOR_TEXT_BANKS:
+    if distractor_variant not in DISTRACTOR_VARIANTS:
         raise ValueError(
-            f"distractor_variant must be one of {tuple(DISTRACTOR_TEXT_BANKS)}"
+            f"distractor_variant must be one of {DISTRACTOR_VARIANTS}"
         )
-    distractor_texts = DISTRACTOR_TEXT_BANKS[distractor_variant]
+    if not isinstance(support_position_mode, str):
+        raise TypeError("support_position_mode must be a string")
+    if support_position_mode not in SUPPORT_POSITION_MODES:
+        raise ValueError(
+            f"support_position_mode must be one of {SUPPORT_POSITION_MODES}"
+        )
+    supporting_facts = tuple(supporting_fact_text(example) for example in examples)
     encoded = []
     for example_index, example in enumerate(examples):
-        support_text = f"Fact: {supporting_fact_text(example)}\n"
+        support_fact = supporting_facts[example_index]
+        support_text = f"Fact: {support_fact}\n"
         support_ids = tuple(tokenizer.encode(support_text))
         if len(support_ids) > segment_length:
             raise ValueError("supporting fact does not fit inside one segment")
@@ -160,15 +185,32 @@ def build_memory_required_qa_examples(
         answer_ids = tuple(tokenizer.encode(example.answer))
         if len(query_ids) + len(answer_ids) + 1 > segment_length:
             raise ValueError("question and answer do not fit inside one segment")
-        distractor_ids = tuple(
-            tuple(
-                tokenizer.encode(
-                    distractor_texts[
-                        (example_index + distractor_index) % len(distractor_texts)
-                    ]
-                )
+        if distractor_variant == "matched":
+            support_subject = support_fact.split(maxsplit=1)[0]
+            distractor_facts = tuple(
+                fact
+                for candidate_index, fact in enumerate(supporting_facts)
+                if candidate_index != example_index
+                and fact.split(maxsplit=1)[0] != support_subject
             )
-            for distractor_index in range(int(distractor_segments))
+            if distractor_segments > 0 and not distractor_facts:
+                raise ValueError(
+                    "matched distractors require a fact about another subject"
+                )
+            distractor_texts = tuple(
+                "Fact: "
+                f"{distractor_facts[(example_index + index) % len(distractor_facts)]}"
+                "\n"
+                for index in range(int(distractor_segments))
+            )
+        else:
+            text_bank = DISTRACTOR_TEXT_BANKS[distractor_variant]
+            distractor_texts = tuple(
+                text_bank[(example_index + index) % len(text_bank)]
+                for index in range(int(distractor_segments))
+            )
+        distractor_ids = tuple(
+            tuple(tokenizer.encode(text)) for text in distractor_texts
         )
         if any(len(distractor) > segment_length for distractor in distractor_ids):
             raise ValueError("distractor text does not fit inside one segment")
@@ -182,6 +224,11 @@ def build_memory_required_qa_examples(
                 split=example.split,
                 distractor_ids=distractor_ids,
                 distractor_variant=distractor_variant,
+                support_segment_index=(
+                    example_index % (int(distractor_segments) + 1)
+                    if support_position_mode == "cycled"
+                    else 0
+                ),
             )
         )
     return encoded

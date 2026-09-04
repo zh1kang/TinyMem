@@ -185,6 +185,53 @@ def collate_memory_required_distractor(
     return input_ids, token_valid
 
 
+def collate_memory_required_prefix_segment(
+    examples: Sequence[MemoryRequiredQAExample],
+    segment_index: int,
+    *,
+    pad_id: int,
+    device: torch.device | str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Right-pad one physical support-or-distractor prefix segment."""
+    if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
+        raise TypeError("examples must be a sequence")
+    if not examples or not all(
+        isinstance(example, MemoryRequiredQAExample) for example in examples
+    ):
+        raise ValueError("examples must contain MemoryRequiredQAExample values")
+    if isinstance(segment_index, bool) or not isinstance(segment_index, Integral):
+        raise TypeError("segment_index must be an integer")
+    segment_counts = {len(example.prefix_ids) for example in examples}
+    if len(segment_counts) != 1:
+        raise ValueError("all examples in a batch must have equal prefix counts")
+    segment_count = next(iter(segment_counts))
+    if not 0 <= segment_index < segment_count:
+        raise ValueError("segment_index is out of range")
+    if isinstance(pad_id, bool) or not isinstance(pad_id, Integral):
+        raise TypeError("pad_id must be an integer")
+    if not 0 <= pad_id < ByteTokenizer.vocab_size:
+        raise ValueError("pad_id must be in the byte-token vocabulary")
+
+    sequences = [example.prefix_ids[int(segment_index)] for example in examples]
+    max_length = max(map(len, sequences))
+    input_ids = torch.full(
+        (len(examples), max_length),
+        int(pad_id),
+        dtype=torch.long,
+        device=device,
+    )
+    token_valid = torch.zeros_like(input_ids, dtype=torch.bool)
+    for row, sequence in enumerate(sequences):
+        length = len(sequence)
+        input_ids[row, :length] = torch.tensor(
+            sequence,
+            dtype=torch.long,
+            device=device,
+        )
+        token_valid[row, :length] = True
+    return input_ids, token_valid
+
+
 def memory_required_write_gate_loss(
     decoder: SegmentedContinuousDecoder,
     examples: Sequence[MemoryRequiredQAExample],
@@ -270,6 +317,31 @@ def unroll_memory_required_prefix(
     if len(distractor_counts) != 1:
         raise ValueError("all examples in a batch must have equal distractor counts")
     distractor_count = next(iter(distractor_counts))
+    if any(example.support_segment_index != 0 for example in examples) and (
+        initial_memory is not None or not write_distractors
+    ):
+        raise ValueError(
+            "non-first support positions require learned write-all unrolling"
+        )
+
+    if initial_memory is None and write_distractors:
+        memory = None
+        for segment_index in range(distractor_count + 1):
+            segment_ids, segment_valid = collate_memory_required_prefix_segment(
+                examples,
+                segment_index,
+                pad_id=pad_id,
+                device=device,
+            )
+            output = decoder(
+                segment_ids,
+                segment_valid,
+                initial_memory=memory,
+                position_offset=segment_index * decoder.segment_length,
+            )
+            memory = _output_memory(output)
+        assert memory is not None
+        return memory
 
     if initial_memory is None:
         support_ids, support_valid = collate_memory_required_support(

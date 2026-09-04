@@ -19,6 +19,7 @@ from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.training.memory_required_qa import (
     audit_cross_segment_gradients,
     collate_memory_required_distractor,
+    collate_memory_required_prefix_segment,
     collate_memory_required_query,
     collate_memory_required_support,
     memory_required_write_gate_loss,
@@ -31,6 +32,7 @@ from tinymem.training.memory_required_qa import (
 def make_examples(
     distractor_segments: int = 0,
     distractor_variant: str = "trained",
+    support_position_mode: str = "first",
 ):
     source = parse_babi_lines(
         [
@@ -49,6 +51,7 @@ def make_examples(
         segment_length=64,
         distractor_segments=distractor_segments,
         distractor_variant=distractor_variant,
+        support_position_mode=support_position_mode,
     )
 
 
@@ -116,6 +119,58 @@ def test_heldout_distractors_change_only_intervening_content() -> None:
         assert trained_example.answer_ids == heldout_example.answer_ids
         assert trained_example.distractor_ids != heldout_example.distractor_ids
         assert heldout_example.distractor_variant == "heldout"
+
+
+def test_matched_distractors_use_other_babi_facts_and_cycle_support() -> None:
+    examples = make_examples(
+        distractor_segments=2,
+        distractor_variant="matched",
+        support_position_mode="cycled",
+    )
+    tokenizer = ByteTokenizer()
+
+    assert [example.support_segment_index for example in examples] == [0, 1]
+    for example in examples:
+        support_subject = tokenizer.decode(example.support_ids).split()[1]
+        assert example.prefix_ids[example.support_segment_index] == example.support_ids
+        for distractor in example.distractor_ids:
+            distractor_text = tokenizer.decode(distractor)
+            assert distractor_text.startswith("Fact: ")
+            assert distractor_text.split()[1] != support_subject
+
+
+def test_cycled_prefix_unroll_preserves_physical_slot_positions() -> None:
+    torch.manual_seed(43)
+    examples = make_examples(
+        distractor_segments=2,
+        distractor_variant="matched",
+        support_position_mode="cycled",
+    )
+    decoder = make_decoder(memory_capacity=3).eval()
+
+    memory = unroll_memory_required_prefix(
+        decoder,
+        examples,
+        pad_id=ByteTokenizer.special_tokens["<pad>"],
+        device="cpu",
+    )
+
+    assert memory.valid.all()
+    for row, example in enumerate(examples):
+        assert memory.positions[row].tolist() == [
+            index * 64 + len(segment) - 1
+            for index, segment in enumerate(example.prefix_ids)
+        ]
+    segment_ids, segment_valid = collate_memory_required_prefix_segment(
+        examples,
+        1,
+        pad_id=ByteTokenizer.special_tokens["<pad>"],
+        device="cpu",
+    )
+    assert segment_ids.shape == segment_valid.shape
+    assert segment_valid.sum(dim=1).tolist() == [
+        len(example.prefix_ids[1]) for example in examples
+    ]
 
 
 def test_memory_required_collation_supervises_only_the_answer() -> None:

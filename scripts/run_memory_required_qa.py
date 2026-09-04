@@ -18,7 +18,8 @@ from matplotlib import pyplot as plt
 
 from tinymem.data.babi import load_babi_file
 from tinymem.data.memory_required_qa import (
-    DISTRACTOR_TEXT_BANKS,
+    DISTRACTOR_VARIANTS,
+    SUPPORT_POSITION_MODES,
     build_memory_required_qa_examples,
 )
 from tinymem.data.sampling import select_reasoning_examples
@@ -60,13 +61,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--distractor-segments", type=int, default=0)
     parser.add_argument(
         "--train-distractor-variant",
-        choices=tuple(DISTRACTOR_TEXT_BANKS),
+        choices=DISTRACTOR_VARIANTS,
         default="trained",
     )
     parser.add_argument(
         "--validation-distractor-variant",
-        choices=tuple(DISTRACTOR_TEXT_BANKS),
+        choices=DISTRACTOR_VARIANTS,
         default="trained",
+    )
+    parser.add_argument(
+        "--support-position-mode",
+        choices=SUPPORT_POSITION_MODES,
+        default="first",
     )
     parser.add_argument("--memory-capacity", type=int)
     parser.add_argument(
@@ -181,6 +187,13 @@ def main() -> None:
         raise ValueError("gated mode requires positive write_loss_weight")
     if args.mode != "gated" and args.distractor_write_policy == "learned":
         raise ValueError("learned write policy requires gated mode")
+    if (
+        args.support_position_mode != "first"
+        and args.distractor_write_policy == "none"
+    ):
+        raise ValueError("cycled support positions require enabled distractor writes")
+    if args.support_position_mode != "first" and args.mode == "oracle":
+        raise ValueError("cycled support positions are not supported in oracle mode")
     if args.seed < 0 or args.validation_seed < 0:
         raise ValueError("seeds must be nonnegative")
 
@@ -239,6 +252,7 @@ def main() -> None:
         segment_length=args.segment_length,
         distractor_segments=args.distractor_segments,
         distractor_variant=args.train_distractor_variant,
+        support_position_mode=args.support_position_mode,
     )
     validation_examples = build_memory_required_qa_examples(
         select_reasoning_examples(
@@ -250,6 +264,7 @@ def main() -> None:
         segment_length=args.segment_length,
         distractor_segments=args.distractor_segments,
         distractor_variant=args.validation_distractor_variant,
+        support_position_mode=args.support_position_mode,
     )
 
     oracle_train = None
@@ -399,6 +414,7 @@ def main() -> None:
         / f"distractors_{args.distractor_segments}"
         / f"capacity_{memory_capacity}"
         / f"writes_{args.distractor_write_policy}"
+        / f"positions_{args.support_position_mode}"
         / f"validation_{args.validation_distractor_variant}"
         / f"seed_{args.seed}",
         experiment_config,
@@ -436,6 +452,7 @@ def main() -> None:
             "train_distractor_variant": args.train_distractor_variant,
             "validation_distractor_variant": args.validation_distractor_variant,
             "distractor_write_policy": args.distractor_write_policy,
+            "support_position_mode": args.support_position_mode,
             "write_loss_weight": (
                 args.write_loss_weight if args.mode == "gated" else 0.0
             ),
@@ -461,6 +478,7 @@ def main() -> None:
         "train_distractor_variant": args.train_distractor_variant,
         "validation_distractor_variant": args.validation_distractor_variant,
         "distractor_write_policy": args.distractor_write_policy,
+        "support_position_mode": args.support_position_mode,
         "memory_position_mode": "virtual",
         "train_examples": len(train_examples),
         "validation_examples": len(validation_examples),
