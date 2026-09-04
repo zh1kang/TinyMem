@@ -20,6 +20,7 @@ dev = [
   "pytest>=8.0",
 ]
 research = [
+    "peft==0.20.0",
     "transformers==5.16.1",
 ]
 

@@ -27,6 +27,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", type=Path, default=Path("data/raw/pretrained/qwen3-1.7b"))
     parser.add_argument("--babi-root", type=Path, default=Path("data/raw/tasks_1-20_v1-2/en-10k"))
+    parser.add_argument("--adapter", type=Path)
     parser.add_argument("--examples-per-task", type=int, default=100)
     parser.add_argument("--replacement-examples", type=int, default=200)
     parser.add_argument("--copy-examples", type=int, default=64)
@@ -39,6 +40,17 @@ def main() -> None:
     args = parser.parse_args()
     if args.batch_size <= 0 or args.max_new_tokens <= 0:
         raise ValueError("batch size and max_new_tokens must be positive")
+    adapter_fingerprint = None
+    excluded_gate_hash = None
+    if args.adapter is not None:
+        adapter_fingerprint = {
+            name: hashlib.sha256((args.adapter / name).read_bytes()).hexdigest()
+            for name in ("adapter_config.json", "adapter_model.safetensors", "reader_adapter_protocol.json")
+        }
+        adapter_protocol = json.loads((args.adapter / "reader_adapter_protocol.json").read_text())
+        excluded_gate_hash = adapter_protocol["excluded_gate_manifest_sha256"]
+        if adapter_protocol["protocol"] != "visible_reader_adapter_v1" or not excluded_gate_hash:
+            raise ValueError("adapter must record the gate excluded from its training")
     device = select_device(args.device)
     seed_everything(args.seed)
     cases = make_reader_gate_cases(
@@ -49,6 +61,11 @@ def main() -> None:
     source = current_git_source_state(Path(__file__).resolve().parents[1])
     started = time.perf_counter()
     reader = load_qwen_reader(args.model_dir, device=device, dtype=getattr(torch, args.dtype))
+    if args.adapter is not None:
+        from peft import PeftModel
+
+        reader.model = PeftModel.from_pretrained(reader.model, args.adapter, is_trainable=False, local_files_only=True, use_safetensors=True)
+        reader.model.eval().requires_grad_(False)
     load_seconds = time.perf_counter() - started
     conditions = ("full_context", "question_only")
     prepared = []
@@ -67,13 +84,17 @@ def main() -> None:
         "babi_source_sha256": {name: hashlib.sha256((args.babi_root / name).read_bytes()).hexdigest() for name in BABI_GATE_FILES.values()},
         "replacement_protocol": "history_disjoint_v2", "replacement_split": "validation",
     }, sort_keys=True, indent=2) + "\n"
+    manifest_hash = hashlib.sha256(manifest.encode()).hexdigest()
+    if excluded_gate_hash is not None and manifest_hash != excluded_gate_hash:
+        raise ValueError("adapter evaluation must use the exact gate excluded from training")
     run = args.artifact_root / f"{datetime.now(UTC):%Y%m%dT%H%M%S.%fZ}-{uuid.uuid4().hex[:8]}"
     run.mkdir(parents=True, exist_ok=False)
     (run / "data_manifest.json").write_text(manifest, encoding="utf-8")
     protocol = {
         "protocol": "visible_reader_gate_v1", "source": source.to_dict(),
         "arguments": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
-        "snapshot": snapshot, "data_manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
+        "snapshot": snapshot, "data_manifest_sha256": manifest_hash,
+        "adapter_sha256": adapter_fingerprint,
         "environment": {"python": platform.python_version(), "platform": platform.platform(),
                         "packages": {item.metadata["Name"]: item.version for item in importlib.metadata.distributions()}},
         "model_config": reader.model.config.to_dict(), "reader_parameters": sum(p.numel() for p in reader.model.parameters()),
