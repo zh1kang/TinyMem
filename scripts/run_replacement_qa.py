@@ -337,6 +337,7 @@ def main() -> None:
     )
     result_document = {
         **data_metadata,
+        "shuffle_policy": "different_semantic_history_v2",
         "status": "development_content_aware_replacement",
         "gate_passed": _passes_gate(result),
         "seed": args.seed,

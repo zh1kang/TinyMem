@@ -12,6 +12,7 @@ from tinymem.data.replacement_qa import (
 )
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.data.replacement_manifest import replacement_manifest
+from tinymem.evaluation.replacement_qa import mismatched_history_indices
 
 
 def examples(split="train", count=100, seed=0, capacity=2, **kwargs):
@@ -103,6 +104,21 @@ def test_finite_partition_exhaustion_is_explicit():
 def test_unknown_protocol_is_rejected():
     with pytest.raises(ValueError, match="protocol"):
         examples(protocol="not-a-protocol")
+
+
+def test_memory_shuffle_changes_every_history_in_grouped_query_data():
+    rows = examples(count=12)
+    for ordered in (rows, list(reversed(rows)), rows[::2] + rows[1::2]):
+        indices = mismatched_history_indices(ordered)
+        assert sorted(indices) == list(range(len(ordered)))
+        assert all(
+            replacement_history_id(row) != replacement_history_id(ordered[other])
+            for row, other in zip(ordered, indices, strict=True)
+        )
+    with pytest.raises(ValueError, match="distinct histories"):
+        mismatched_history_indices(rows[:2])
+    with pytest.raises(ValueError, match="imbalanced"):
+        mismatched_history_indices(rows[:3])
 
 
 def test_manifest_records_exact_inputs_and_rejects_leaked_histories():

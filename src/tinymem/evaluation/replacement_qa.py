@@ -9,10 +9,9 @@ from numbers import Integral
 import torch
 from torch.nn import functional as F
 
-from tinymem.data.replacement_qa import ReplacementQAExample
+from tinymem.data.replacement_qa import ReplacementQAExample, replacement_history_id
 from tinymem.evaluation.continuous_memory import (
     drop_memory,
-    shuffle_memory,
     zero_memory,
 )
 from tinymem.memory.replacement import (
@@ -116,6 +115,21 @@ def _row_memory(memory: AttentionMemory, index: int) -> AttentionMemory:
         valid=memory.valid[index : index + 1],
         positions=memory.positions[index : index + 1],
     )
+
+
+def mismatched_history_indices(examples: Sequence[ReplacementQAExample]) -> list[int]:
+    """Derange history groups so alternate questions never keep their own memory."""
+    histories = [replacement_history_id(example) for example in examples]
+    if len(set(histories)) < 2:
+        raise ValueError("memory shuffle requires at least two distinct histories")
+    order = sorted(range(len(histories)), key=histories.__getitem__)
+    largest_group = max(histories.count(history) for history in set(histories))
+    if largest_group * 2 > len(histories):
+        raise ValueError("history groups are too imbalanced for a memory derangement")
+    indices = [0] * len(order)
+    for rank, source in enumerate(order):
+        indices[source] = order[(rank + largest_group) % len(order)]
+    return indices
 
 
 def _score_and_generate(
@@ -222,6 +236,9 @@ def evaluate_replacement_qa(
         )
         fifo_slots = torch.zeros_like(target_slots)
         wrong_slots = (target_slots + 1) % decoder.bank.capacity
+        shuffled_indices = torch.tensor(
+            mismatched_history_indices(examples), device=device, dtype=torch.long,
+        )
         conditions = {
             "normal": built.corrected_memory,
             "oracle_slot": _forced_memory(
@@ -248,7 +265,11 @@ def evaluate_replacement_qa(
             "frozen": built.initial_memory,
             "drop": drop_memory(built.corrected_memory),
             "zero": zero_memory(built.corrected_memory),
-            "shuffle": shuffle_memory(built.corrected_memory),
+            "shuffle": AttentionMemory(
+                values=built.corrected_memory.values.index_select(0, shuffled_indices),
+                valid=built.corrected_memory.valid.index_select(0, shuffled_indices),
+                positions=built.corrected_memory.positions.index_select(0, shuffled_indices),
+            ),
         }
         raw: dict[
             str,
