@@ -458,3 +458,4 @@ def test_memory_required_evaluation_runs_all_causal_conditions() -> None:
     assert oracle["normal"].count == learned["normal"].count == 2
     assert oracle["normal"].mean_first_byte_logit_linf_from_normal == 0
     assert learned["normal"].mean_first_byte_logit_linf_from_normal == 0
+    assert tuple(learned["normal"].support_position_exact_accuracy) == (0,)

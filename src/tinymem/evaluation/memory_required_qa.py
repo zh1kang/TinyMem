@@ -44,6 +44,7 @@ class MemoryRequiredQAConditionResult:
     first_byte_accuracy: float
     answer_byte_nll: float
     mean_first_byte_logit_linf_from_normal: float
+    support_position_exact_accuracy: dict[int, float]
     predictions: tuple[MemoryRequiredQAPrediction, ...]
 
     def to_dict(self) -> dict[str, object]:
@@ -502,6 +503,9 @@ def evaluate_memory_required_qa(
             total_bytes,
             first_logits,
         ) in raw_results.items():
+            support_positions = sorted(
+                {example.support_segment_index for example in examples}
+            )
             results[condition] = MemoryRequiredQAConditionResult(
                 condition=condition,
                 count=len(predictions),
@@ -521,6 +525,22 @@ def evaluate_memory_required_qa(
                     )
                 )
                 / len(predictions),
+                support_position_exact_accuracy={
+                    position: sum(
+                        prediction.exact_match
+                        for prediction, example in zip(
+                            predictions,
+                            examples,
+                            strict=True,
+                        )
+                        if example.support_segment_index == position
+                    )
+                    / sum(
+                        example.support_segment_index == position
+                        for example in examples
+                    )
+                    for position in support_positions
+                },
                 predictions=predictions,
             )
         return results

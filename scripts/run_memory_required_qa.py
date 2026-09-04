@@ -520,6 +520,9 @@ def main() -> None:
                         "first_byte_logit_linf": (
                             result.mean_first_byte_logit_linf_from_normal
                         ),
+                        "support_position_exact_accuracy": (
+                            result.support_position_exact_accuracy
+                        ),
                     }
                     for name, result in after.items()
                 },
