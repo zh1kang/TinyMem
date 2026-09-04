@@ -59,6 +59,29 @@ def test_raw_embedding_prefix_matches_native_loss_and_generation_without_cache(r
     assert not hasattr(reader, "past_key_values")
 
 
+def test_packed_retention_reconstructs_the_same_bounded_reader_input(reader):
+    from tinymem.memory.packed_tokens import PackedTokenRetention
+
+    policy = PackedTokenRetention(3, reader.model.config.vocab_size)
+    history = torch.tensor([[3, 4, 3, 5, 4, 3]])
+    state = policy.empty(1, device="cpu")
+    for chunk in history.split(2, dim=1):
+        state = policy.append(state, chunk, torch.ones_like(chunk, dtype=torch.bool))
+    saved = state.payload.clone()
+    decoded, valid = policy.materialize(state, pad_id=0)
+    memory = reader.model.get_input_embeddings()(decoded[0, valid[0]])
+    expected_memory = reader.model.get_input_embeddings()(history[0, -3:])
+    before, after, answer = (torch.tensor(ids) for ids in ([3], [4, 5], [3, 2]))
+    actual = prefix_answer_loss(reader, before, memory, after, answer)
+    expected = prefix_answer_loss(reader, before, expected_memory, after, answer)
+    assert torch.equal(actual, expected)
+    assert generate_prefix_answer(reader, before, memory, after, max_new_tokens=4) == generate_prefix_answer(
+        reader, before, expected_memory, after, max_new_tokens=4,
+    )
+    assert torch.equal(state.payload, saved)
+    assert state.nbytes == 2
+
+
 @pytest.mark.parametrize("lora", [False, True])
 def test_frozen_reader_preserves_memory_gradients_with_checkpointing(reader, lora):
     if lora:
