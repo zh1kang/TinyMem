@@ -218,6 +218,7 @@ def build_replacement_memory(
     pad_id: int,
     device: torch.device | str,
     forced_slots: torch.Tensor | None = None,
+    detach_controller_inputs: bool = False,
 ) -> ReplacementMemoryBuild:
     """Encode a full bank and replace the slot selected for one correction."""
     if not isinstance(decoder, SegmentedContinuousDecoder):
@@ -231,6 +232,8 @@ def build_replacement_memory(
         raise TypeError("pad_id must be an integer")
     if not 0 <= pad_id < ByteTokenizer.vocab_size:
         raise ValueError("pad_id must be in the byte-token vocabulary")
+    if not isinstance(detach_controller_inputs, bool):
+        raise TypeError("detach_controller_inputs must be a boolean")
 
     slot_values = []
     slot_valid = []
@@ -259,8 +262,12 @@ def build_replacement_memory(
         device=device,
     )
     controller_output = controller(
-        correction,
-        initial_memory.values,
+        correction.detach() if detach_controller_inputs else correction,
+        (
+            initial_memory.values.detach()
+            if detach_controller_inputs
+            else initial_memory.values
+        ),
         initial_memory.valid,
     )
     assignments = controller_output.assignments
@@ -375,6 +382,7 @@ def train_replacement_qa(
             batch,
             pad_id=int(pad_id),
             device=device,
+            detach_controller_inputs=step <= int(slot_pretrain_steps),
         )
         input_ids, target_ids, valid = collate_replacement_query(
             batch,

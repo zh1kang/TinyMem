@@ -166,6 +166,31 @@ def test_answer_loss_reaches_correction_summary_and_replacement_controller() -> 
     assert torch.count_nonzero(controller.pair_projection.weight.grad) > 0
 
 
+def test_detached_slot_pretraining_updates_only_the_controller() -> None:
+    torch.manual_seed(6)
+    decoder = make_decoder()
+    controller = SlotReplacementController(8)
+    examples = make_examples(count=3)
+    built = build_replacement_memory(
+        decoder,
+        controller,
+        examples,
+        pad_id=ByteTokenizer.special_tokens["<pad>"],
+        device="cpu",
+        detach_controller_inputs=True,
+    )
+    targets = torch.tensor([example.correction_slot for example in examples])
+
+    torch.nn.functional.cross_entropy(
+        built.controller_output.logits,
+        targets,
+    ).backward()
+
+    assert all(parameter.grad is None for parameter in decoder.parameters())
+    assert controller.pair_projection.weight.grad is not None
+    assert torch.count_nonzero(controller.pair_projection.weight.grad) > 0
+
+
 def test_replacement_answer_loss_emphasizes_semantic_prefix_bytes() -> None:
     examples = make_examples(count=2)
     input_ids, targets, _ = collate_replacement_query(
