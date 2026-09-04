@@ -115,3 +115,31 @@ def test_conversational_training_updates_decoder_with_lm_anchor() -> None:
     assert len(history.language_model_losses) == 2
     assert all(math.isfinite(loss) for loss in history.total_losses)
     assert not torch.equal(before, decoder.model.lm_head.weight)
+
+
+def test_conversational_training_reports_every_step() -> None:
+    torch.manual_seed(3)
+    tokenizer = ByteTokenizer()
+    decoder = make_decoder()
+    optimizer = torch.optim.AdamW(decoder.parameters(), lr=0.01)
+    examples = [
+        encode_conversational_qa_example(make_reasoning_example("blue"), tokenizer),
+    ]
+    seen: list[tuple[int, float, float | None]] = []
+
+    train_conversational_qa(
+        decoder,
+        optimizer,
+        examples,
+        steps=3,
+        batch_size=1,
+        gradient_clip_norm=1.0,
+        pad_id=tokenizer.special_tokens["<pad>"],
+        device="cpu",
+        seed=5,
+        on_step=lambda step, answer, lm: seen.append((step, answer, lm)),
+    )
+
+    assert [step for step, _, _ in seen] == [1, 2, 3]
+    assert all(math.isfinite(answer) for _, answer, _ in seen)
+    assert all(lm is None for _, _, lm in seen)

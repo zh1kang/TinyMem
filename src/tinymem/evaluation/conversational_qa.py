@@ -9,15 +9,39 @@ from dataclasses import asdict, dataclass
 import torch
 
 from tinymem.evaluation.longmemeval import (
+    MemoryIntervention,
     answer_token_f1,
     generate_longmemeval_from_state,
     normalized_answer,
     stream_longmemeval_prompt,
 )
+from tinymem.evaluation.continuous_memory import drop_memory, zero_memory
 from tinymem.evaluation.longmemeval_diagnostics import score_candidate_answer
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.training.conversational_qa import ByteQAExample
+
+
+MEMORY_CONDITIONS = ("normal", "drop_at_query", "zero_at_query", "no_writes")
+
+
+def resolve_memory_condition(
+    name: str,
+) -> tuple[MemoryIntervention | None, bool]:
+    """Map a named evaluation condition to its intervention and write flag.
+
+    ``drop_at_query`` hides every slot from the final segment, ``zero_at_query``
+    keeps occupancy but removes content, and ``no_writes`` never fills memory.
+    """
+    if name not in MEMORY_CONDITIONS:
+        raise ValueError(f"memory condition must be one of {MEMORY_CONDITIONS}")
+    if name == "drop_at_query":
+        return drop_memory, True
+    if name == "zero_at_query":
+        return zero_memory, True
+    if name == "no_writes":
+        return None, False
+    return None, True
 
 
 @dataclass(frozen=True)
@@ -102,8 +126,15 @@ def evaluate_conversational_qa(
     device: torch.device | str,
     max_new_tokens: int,
     chunk_tokens: int,
+    query_memory_intervention: MemoryIntervention | None = None,
+    update_memory: bool = True,
 ) -> ConversationalQAEvaluation:
-    """Generate controlled answers through the external prompt boundary."""
+    """Generate controlled answers through the external prompt boundary.
+
+    ``query_memory_intervention`` edits the memory read by the final prompt
+    segment and by generation, and ``update_memory=False`` disables every
+    write, matching the frozen LongMemEval intervention protocol.
+    """
     if not isinstance(decoder, SegmentedContinuousDecoder):
         raise TypeError("decoder must be a SegmentedContinuousDecoder")
     if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
@@ -112,6 +143,12 @@ def evaluate_conversational_qa(
         isinstance(example, ByteQAExample) for example in examples
     ):
         raise ValueError("examples must contain ByteQAExample values")
+    if query_memory_intervention is not None and not callable(
+        query_memory_intervention
+    ):
+        raise TypeError("query_memory_intervention must be callable or None")
+    if not isinstance(update_memory, bool):
+        raise TypeError("update_memory must be a boolean")
 
     tokenizer = ByteTokenizer()
     was_training = decoder.training
@@ -127,6 +164,8 @@ def evaluate_conversational_qa(
                 prompt,
                 device=device,
                 chunk_tokens=chunk_tokens,
+                query_memory_intervention=query_memory_intervention,
+                update_memory=update_memory,
             )
             prediction = generate_longmemeval_from_state(
                 decoder,

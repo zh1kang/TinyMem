@@ -21,6 +21,7 @@ from tinymem.data.correction_deletion import generate_update_examples
 from tinymem.data.sampling import select_reasoning_examples
 from tinymem.data.schema import ReasoningExample
 from tinymem.data.wikitext import load_wikitext_parquet
+from tinymem.evaluation.conversational_delay import build_mixed_delay_examples
 from tinymem.evaluation.conversational_qa import (
     ConversationalQAEvaluation,
     evaluate_conversational_qa,
@@ -39,7 +40,7 @@ from tinymem.training.language_model import (
     evaluate_segmented_language_model,
 )
 from tinymem.utils.device import select_device
-from tinymem.utils.experiment import create_run_directory, current_git_commit
+from tinymem.utils.experiment import create_run_directory, current_git_source_state
 from tinymem.utils.seed import seed_everything
 
 
@@ -65,6 +66,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk-tokens", type=int, default=512)
     parser.add_argument("--max-wikitext-validation-tokens", type=int, default=50_000)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--progress-every", type=int, default=100)
+    parser.add_argument(
+        "--training-delay-max-bytes",
+        type=int,
+        default=0,
+        help="insert up to this many WikiText train bytes before the question "
+        "in a random fraction of training examples; zero disables the curriculum",
+    )
+    parser.add_argument("--training-delay-fraction", type=float, default=0.5)
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda", "mps"),
@@ -167,9 +177,14 @@ def main() -> None:
         "max_new_tokens",
         "chunk_tokens",
         "max_wikitext_validation_tokens",
+        "progress_every",
     ):
         if getattr(args, name) <= 0:
             raise ValueError(f"{name} must be positive")
+    if args.training_delay_max_bytes < 0:
+        raise ValueError("training_delay_max_bytes must be nonnegative")
+    if not 0 <= args.training_delay_fraction <= 1:
+        raise ValueError("training_delay_fraction must be in [0, 1]")
     repository_root = Path(__file__).resolve().parents[1]
     checkpoint_path = args.checkpoint.resolve()
     device = select_device(args.device)
@@ -212,9 +227,6 @@ def main() -> None:
             base_seed=args.seed,
         )
     )
-    encoded_train = encode_examples(train_examples, tokenizer)
-    encoded_validation = encode_examples(validation_examples, tokenizer)
-
     wikitext_train = load_wikitext_parquet(
         repository_root / "data/raw/wikitext2/train.parquet",
         split="train",
@@ -223,6 +235,25 @@ def main() -> None:
         repository_root / "data/raw/wikitext2/validation.parquet",
         split="validation",
     )
+    if args.training_delay_max_bytes > 0:
+        encoded_train = build_mixed_delay_examples(
+            train_examples,
+            tokenizer,
+            filler_text=wikitext_train.text,
+            max_filler_bytes=args.training_delay_max_bytes,
+            delayed_fraction=args.training_delay_fraction,
+            seed=args.seed,
+        )
+    else:
+        encoded_train = encode_examples(train_examples, tokenizer)
+    encoded_validation = encode_examples(validation_examples, tokenizer)
+    training_delay = {
+        "max_bytes": args.training_delay_max_bytes,
+        "fraction": (
+            args.training_delay_fraction if args.training_delay_max_bytes else 0.0
+        ),
+        "filler_split": "train" if args.training_delay_max_bytes else None,
+    }
     wikitext_train_ids = torch.tensor(
         tokenizer.encode(wikitext_train.text),
         dtype=torch.long,
@@ -268,6 +299,27 @@ def main() -> None:
         weight_decay=args.weight_decay,
     )
     training_started = time.perf_counter()
+
+    def report_progress(step: int, answer_loss: float, lm_loss: float | None) -> None:
+        if step % args.progress_every == 0 or step == args.steps:
+            print(
+                json.dumps(
+                    {
+                        "step": step,
+                        "answer_loss": round(answer_loss, 4),
+                        "language_model_loss": (
+                            round(lm_loss, 4) if lm_loss is not None else None
+                        ),
+                        "elapsed_seconds": round(
+                            time.perf_counter() - training_started,
+                            1,
+                        ),
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+
     history = train_conversational_qa(
         decoder,
         optimizer,
@@ -281,6 +333,7 @@ def main() -> None:
         language_model_token_ids=wikitext_train_ids,
         language_model_loss_weight=args.language_model_loss_weight,
         language_model_sequence_length=args.language_model_sequence_length,
+        on_step=report_progress,
     )
     training_seconds = time.perf_counter() - training_started
 
@@ -301,11 +354,13 @@ def main() -> None:
         max_tokens=args.max_wikitext_validation_tokens,
     )
 
-    commit = current_git_commit(repository_root)
+    source_state = current_git_source_state(repository_root)
+    commit = source_state.commit
     run_directory = create_run_directory(
         repository_root / args.artifact_root,
         fine_tune_config,
         git_commit=commit,
+        source_state=source_state,
     )
     output_checkpoint = run_directory / "checkpoint.pt"
     save_checkpoint(
@@ -321,6 +376,8 @@ def main() -> None:
             "tokenizer": "utf8_bytes_v1",
             "parent_checkpoint": str(checkpoint_path),
             "parent_checkpoint_sha256": _sha256(checkpoint_path),
+            **loaded.memory_spec.to_metadata(),
+            "training_delay": training_delay,
             "training_datasets": [
                 f"bAbI {','.join(tasks)}",
                 "TinyMem updates",
@@ -332,12 +389,16 @@ def main() -> None:
     result_document = {
         "status": "development_single_seed_conversational_qa",
         "git_commit": commit,
+        "source_state": source_state.to_dict(),
         "seed": args.seed,
         "device": str(device),
         "parent_checkpoint": str(checkpoint_path),
         "parent_checkpoint_sha256": _sha256(checkpoint_path),
         "checkpoint": str(output_checkpoint),
         "checkpoint_sha256": _sha256(output_checkpoint),
+        "selected_window": loaded.selected_window,
+        "memory": loaded.memory_spec.to_metadata(),
+        "training_delay": training_delay,
         "tasks": list(tasks),
         "train_example_count": len(encoded_train),
         "validation_example_count": len(encoded_validation),
@@ -347,7 +408,10 @@ def main() -> None:
         "steps": args.steps,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
+        "gradient_clip_norm": args.gradient_clip_norm,
         "language_model_loss_weight": args.language_model_loss_weight,
+        "language_model_sequence_length": args.language_model_sequence_length,
         "training_seconds": training_seconds,
         "final_total_loss": history.total_losses[-1],
         "final_answer_loss": history.answer_losses[-1],

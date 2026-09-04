@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from numbers import Integral, Real
 
@@ -14,6 +14,9 @@ from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.training.language_model import sample_language_model_batch
 from tinymem.training.losses import next_token_cross_entropy
+
+
+StepCallback = Callable[[int, float, float | None], None]
 
 
 @dataclass(frozen=True)
@@ -144,8 +147,13 @@ def train_conversational_qa(
     language_model_token_ids: torch.Tensor | None = None,
     language_model_loss_weight: float = 0.0,
     language_model_sequence_length: int = 256,
+    on_step: StepCallback | None = None,
 ) -> ConversationalQATrainingHistory:
-    """Fine-tune answer generation with an optional ordinary-LM anchor."""
+    """Fine-tune answer generation with an optional ordinary-LM anchor.
+
+    ``on_step`` receives the completed one-based step, the answer loss, and the
+    language-model loss (or ``None``) after every optimizer update.
+    """
     if not isinstance(decoder, SegmentedContinuousDecoder):
         raise TypeError("decoder must be a SegmentedContinuousDecoder")
     if not isinstance(optimizer, Optimizer):
@@ -180,13 +188,15 @@ def train_conversational_qa(
         raise ValueError("language_model_loss_weight must be nonnegative")
     if language_model_loss_weight > 0 and language_model_token_ids is None:
         raise ValueError("positive language-model weight requires a token stream")
+    if on_step is not None and not callable(on_step):
+        raise TypeError("on_step must be callable or None")
 
     generator = torch.Generator().manual_seed(int(seed))
     total_losses = []
     answer_losses = []
     language_model_losses = [] if language_model_loss_weight > 0 else None
     decoder.train()
-    for _ in range(int(steps)):
+    for step in range(1, int(steps) + 1):
         indices = torch.randint(
             len(examples),
             (int(batch_size),),
@@ -234,6 +244,12 @@ def train_conversational_qa(
         if language_model_losses is not None:
             assert language_model_loss is not None
             language_model_losses.append(float(language_model_loss.detach().cpu()))
+        if on_step is not None:
+            on_step(
+                step,
+                answer_losses[-1],
+                language_model_losses[-1] if language_model_losses else None,
+            )
 
     return ConversationalQATrainingHistory(
         total_losses=tuple(total_losses),

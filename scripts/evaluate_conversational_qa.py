@@ -12,12 +12,16 @@ from tinymem.data.babi import load_babi_file
 from tinymem.data.correction_deletion import generate_update_examples
 from tinymem.data.sampling import select_reasoning_examples
 from tinymem.data.schema import ReasoningExample
-from tinymem.evaluation.conversational_qa import evaluate_conversational_qa
+from tinymem.evaluation.conversational_qa import (
+    MEMORY_CONDITIONS,
+    evaluate_conversational_qa,
+    resolve_memory_condition,
+)
 from tinymem.evaluation.wikitext_checkpoint import load_wikitext_checkpoint
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.training.conversational_qa import encode_conversational_qa_example
 from tinymem.utils.device import select_device
-from tinymem.utils.experiment import create_run_directory, current_git_commit
+from tinymem.utils.experiment import create_run_directory, current_git_source_state
 from tinymem.utils.seed import seed_everything
 
 
@@ -37,6 +41,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=64)
     parser.add_argument("--chunk-tokens", type=int, default=512)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument(
+        "--memory-condition",
+        choices=MEMORY_CONDITIONS,
+        default="normal",
+    )
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda", "mps"),
@@ -169,28 +178,37 @@ def main() -> None:
         encode_conversational_qa_example(example, tokenizer)
         for example in examples
     ]
+    intervention, update_memory = resolve_memory_condition(args.memory_condition)
     evaluation = evaluate_conversational_qa(
         loaded.decoder,
         encoded,
         device=device,
         max_new_tokens=args.max_new_tokens,
         chunk_tokens=args.chunk_tokens,
+        query_memory_intervention=intervention,
+        update_memory=update_memory,
     )
 
-    commit = current_git_commit(repository_root)
+    source_state = current_git_source_state(repository_root)
+    commit = source_state.commit
     run_directory = create_run_directory(
         repository_root / args.artifact_root,
         loaded.config,
         git_commit=commit,
+        source_state=source_state,
     )
     result_document = {
         "status": "heldout_controlled_test_single_seed",
         "git_commit": commit,
+        "source_state": source_state.to_dict(),
         "seed": args.seed,
         "device": str(device),
         "checkpoint": str(checkpoint_path),
         "checkpoint_sha256": _sha256(checkpoint_path),
         "architecture": loaded.architecture,
+        "selected_window": loaded.selected_window,
+        "memory": loaded.memory_spec.to_metadata(),
+        "memory_condition": args.memory_condition,
         "tasks": list(tasks),
         "babi_examples_per_task": args.examples_per_task,
         "babi_provenance": build_babi_provenance(
@@ -220,6 +238,7 @@ def main() -> None:
         json.dumps(
             {
                 "status": result_document["status"],
+                "memory_condition": args.memory_condition,
                 "example_count": len(encoded),
                 "overall": evaluation.overall.to_dict(),
                 "by_task": {
