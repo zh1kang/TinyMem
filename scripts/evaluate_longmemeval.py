@@ -15,6 +15,7 @@ matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 
 from tinymem.data.longmemeval import load_longmemeval_file
+from tinymem.evaluation.longmemeval_abstention import ABSTENTION_METADATA
 from tinymem.evaluation.continuous_memory import (
     drop_newest_memory,
     keep_oldest_memory,
@@ -211,8 +212,7 @@ def main() -> None:
         "chunk_tokens": args.chunk_tokens,
         "answers_used_in_prompts": False,
         "training_on_longmemeval": False,
-        "gold_unanswerable_labels": False,
-        "abstention_precision_recall": None,
+        **ABSTENTION_METADATA,
         "results": [result.to_dict() for result in results],
     }
     (run_directory / "results.json").write_text(

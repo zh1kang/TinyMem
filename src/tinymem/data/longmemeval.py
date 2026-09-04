@@ -33,6 +33,10 @@ class LongMemEvalExample:
     split: str = "test"
     training_allowed: bool = False
 
+    @property
+    def gold_unanswerable(self) -> bool:
+        return self.question_id.endswith("_abs")
+
 
 def _required_string(record: dict[str, object], key: str, index: int) -> str:
     value = record.get(key)

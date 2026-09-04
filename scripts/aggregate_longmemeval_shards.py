@@ -15,6 +15,11 @@ import matplotlib
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 
+from tinymem.evaluation.longmemeval_abstention import (
+    ABSTENTION_METADATA,
+    local_abstention_metrics,
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -49,6 +54,7 @@ def aggregate_predictions(predictions: list[dict[str, object]]) -> dict[str, obj
             if covered
             else 0.0
         ),
+        "local_abstention": local_abstention_metrics(predictions),
     }
 
 
@@ -106,6 +112,7 @@ def main() -> None:
     run_directory = args.artifact_root / f"{timestamp}-{uuid.uuid4().hex[:8]}"
     run_directory.mkdir(parents=True, exist_ok=False)
     result_document = {
+        **ABSTENTION_METADATA,
         "status": "frozen_full_external_test",
         **{field: first[field] for field in provenance_fields},
         "example_count": len(predictions),

@@ -11,6 +11,7 @@ from numbers import Integral
 import torch
 
 from tinymem.data.longmemeval import LongMemEvalExample
+from tinymem.evaluation.longmemeval_abstention import local_abstention_metrics
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.memory_input import AttentionMemory
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
@@ -42,8 +43,12 @@ class LongMemEvalPrediction:
     context_bytes: int
     answer_session_count: int
 
+    @property
+    def gold_unanswerable(self) -> bool:
+        return self.question_id.endswith("_abs")
+
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return {**asdict(self), "gold_unanswerable": self.gold_unanswerable}
 
 
 @dataclass(frozen=True)
@@ -55,8 +60,9 @@ class LongMemEvalCategoryResult:
     mean_token_f1: float
     coverage: float
     selective_accuracy: float
+    local_abstention: dict[str, object] | None = None
 
-    def to_dict(self) -> dict[str, float | int]:
+    def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
@@ -362,6 +368,9 @@ def _aggregate(
             sum(prediction.exact_match for prediction in covered) / len(covered)
             if covered
             else 0.0
+        ),
+        local_abstention=local_abstention_metrics(
+            [prediction.to_dict() for prediction in predictions]
         ),
     )
 
