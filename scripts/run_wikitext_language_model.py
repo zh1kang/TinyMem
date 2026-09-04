@@ -17,8 +17,13 @@ from matplotlib import pyplot as plt
 
 from tinymem.data.wikitext import load_wikitext_parquet
 from tinymem.evaluation.continuous_memory import drop_memory, zero_memory
-from tinymem.memory.continuous import MeanPoolMemoryCompressor
-from tinymem.memory.recurrent_memory import RecurrentMemoryBank
+from tinymem.evaluation.wikitext_checkpoint import (
+    DEFAULT_WRITE_THRESHOLD,
+    SUPPORTED_COMPRESSORS,
+    SUPPORTED_MEMORY_UPDATES,
+    ByteMemorySpec,
+    build_byte_memory_decoder,
+)
 from tinymem.model.config import (
     ExperimentConfig,
     MemoryConfig,
@@ -26,8 +31,6 @@ from tinymem.model.config import (
     StreamConfig,
     TrainingConfig,
 )
-from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
-from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.training.checkpointing import save_checkpoint
 from tinymem.training.language_model import (
@@ -37,7 +40,7 @@ from tinymem.training.language_model import (
     train_segmented_language_model,
 )
 from tinymem.utils.device import select_device
-from tinymem.utils.experiment import create_run_directory, current_git_commit
+from tinymem.utils.experiment import create_run_directory, current_git_source_state
 from tinymem.utils.seed import seed_everything
 
 
@@ -62,6 +65,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--segment-length", type=int, default=64)
     parser.add_argument("--sequence-length", type=int, default=256)
     parser.add_argument("--capacity", type=int, default=8)
+    parser.add_argument(
+        "--compressor",
+        choices=SUPPORTED_COMPRESSORS,
+        default="mean",
+    )
+    parser.add_argument("--summaries-per-segment", type=int, default=1)
+    parser.add_argument(
+        "--memory-update",
+        choices=SUPPORTED_MEMORY_UPDATES,
+        default="fifo",
+    )
+    parser.add_argument(
+        "--write-threshold",
+        type=float,
+        default=DEFAULT_WRITE_THRESHOLD,
+        help="hard-write probability for gated updates; ignored for fifo",
+    )
     parser.add_argument(
         "--evaluation-windows",
         type=int,
@@ -118,6 +138,16 @@ def main() -> None:
         for window in args.evaluation_windows
     ):
         raise ValueError("evaluation windows must be in (0, segment_length]")
+    if not 0 < args.summaries_per_segment <= args.capacity:
+        raise ValueError("summaries per segment must be between one and capacity")
+    memory_spec = ByteMemorySpec(
+        compressor=args.compressor,
+        summaries_per_segment=args.summaries_per_segment,
+        memory_update=args.memory_update,
+        write_threshold=(
+            args.write_threshold if args.memory_update == "gated" else None
+        ),
+    )
 
     repository_root = Path(__file__).resolve().parents[1]
     data_root = repository_root / "data/raw/wikitext2"
@@ -153,7 +183,7 @@ def main() -> None:
         memory=MemoryConfig(
             n_slots=args.capacity,
             code_dim=args.d_model,
-            codes_per_write=1,
+            codes_per_write=args.summaries_per_segment,
         ),
         training=TrainingConfig(
             learning_rate=args.learning_rate,
@@ -164,13 +194,9 @@ def main() -> None:
             max_steps=args.steps,
         ),
     )
-    decoder = SegmentedContinuousDecoder(
-        DecoderOnlyTransformer(model_config),
-        MeanPoolMemoryCompressor(args.d_model),
-        RecurrentMemoryBank(
-            capacity=args.capacity,
-            model_width=args.d_model,
-        ),
+    decoder = build_byte_memory_decoder(
+        config,
+        memory_spec,
         segment_length=args.segment_length,
     ).to(device)
     optimizer = torch.optim.AdamW(
@@ -275,11 +301,13 @@ def main() -> None:
         max_tokens=max_test_tokens,
     )
 
-    commit = current_git_commit(repository_root)
+    source_state = current_git_source_state(repository_root)
+    commit = source_state.commit
     run_directory = create_run_directory(
         repository_root / args.artifact_root,
         config,
         git_commit=commit,
+        source_state=source_state,
     )
     memory_bytes = (
         args.capacity
@@ -296,15 +324,23 @@ def main() -> None:
         "seed": args.seed,
         "device": str(device),
         "git_commit": commit,
+        "source_state": source_state.to_dict(),
         "training_tokens": token_streams["train"].numel(),
         "validation_tokens": token_streams["validation"].numel(),
         "test_tokens": token_streams["test"].numel(),
         "evaluated_validation_tokens": max_validation_tokens,
         "evaluated_test_tokens": max_test_tokens,
         "training_seconds": training_seconds,
+        "steps": args.steps,
+        "batch_size": args.batch_size,
+        "sequence_length": args.sequence_length,
+        "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
+        "gradient_clip_norm": args.gradient_clip_norm,
         "final_training_loss": losses[-1],
         "selected_window": selected_window,
         "memory_bytes_per_example": memory_bytes,
+        "memory": memory_spec.to_metadata(),
         "validation_windows": {
             str(window): result.to_dict()
             for window, result in window_results.items()
@@ -341,6 +377,7 @@ def main() -> None:
             "selected_window": selected_window,
             "training_segment_length": args.segment_length,
             "tokenizer": "utf8_bytes_v1",
+            **memory_spec.to_metadata(),
         },
     )
     plot_results(
