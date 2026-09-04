@@ -2,9 +2,16 @@ import torch
 
 from tinymem.data.babi import parse_babi_lines
 from tinymem.data.memory_required_qa import build_memory_required_qa_examples
-from tinymem.evaluation.memory_required_qa import evaluate_memory_required_qa
+from tinymem.evaluation.memory_required_qa import (
+    evaluate_memory_required_qa,
+    evaluate_memory_required_write_gate,
+)
 from tinymem.memory.continuous import MeanPoolMemoryCompressor
-from tinymem.memory.recurrent_memory import RecurrentMemoryBank
+from tinymem.memory.recurrent_memory import (
+    GatedRecurrentMemoryBank,
+    RecurrentMemoryBank,
+)
+from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.config import ModelConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.transformer import DecoderOnlyTransformer
@@ -14,6 +21,7 @@ from tinymem.training.memory_required_qa import (
     collate_memory_required_distractor,
     collate_memory_required_query,
     collate_memory_required_support,
+    memory_required_write_gate_loss,
     precompute_oracle_memories,
     train_memory_required_qa,
     unroll_memory_required_prefix,
@@ -44,7 +52,11 @@ def make_examples(
     )
 
 
-def make_decoder(memory_capacity: int = 1) -> SegmentedContinuousDecoder:
+def make_decoder(
+    memory_capacity: int = 1,
+    *,
+    gated: bool = False,
+) -> SegmentedContinuousDecoder:
     config = ModelConfig(
         vocab_size=ByteTokenizer.vocab_size,
         d_model=8,
@@ -54,11 +66,23 @@ def make_decoder(memory_capacity: int = 1) -> SegmentedContinuousDecoder:
         max_local_tokens=64,
         dropout=0.0,
     )
+    bank = (
+        GatedRecurrentMemoryBank(
+            capacity=memory_capacity,
+            model_width=config.d_model,
+        )
+        if gated
+        else RecurrentMemoryBank(
+            capacity=memory_capacity,
+            model_width=config.d_model,
+        )
+    )
     return SegmentedContinuousDecoder(
         DecoderOnlyTransformer(config),
         MeanPoolMemoryCompressor(config.d_model),
-        RecurrentMemoryBank(capacity=memory_capacity, model_width=config.d_model),
+        bank,
         segment_length=64,
+        write_gate=(TokenSegmentWriteGate(config.d_model) if gated else None),
         memory_position_mode="virtual",
     )
 
@@ -235,6 +259,71 @@ def test_oracle_reader_training_uses_precomputed_support_slots() -> None:
 
     assert oracle_values.shape == (2, 1, 8)
     assert len(history.losses) == 2
+    assert all(torch.isfinite(torch.tensor(history.losses)))
+
+
+def test_write_gate_loss_supervises_support_and_distractor_decisions() -> None:
+    torch.manual_seed(29)
+    examples = make_examples(distractor_segments=2)
+    decoder = make_decoder(gated=True)
+
+    loss = memory_required_write_gate_loss(
+        decoder,
+        examples,
+        pad_id=ByteTokenizer.special_tokens["<pad>"],
+        device="cpu",
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert decoder.write_gate is not None
+    assert decoder.write_gate.score.weight.grad is not None
+    assert decoder.write_gate.score.weight.grad.norm() > 0
+
+
+def test_write_gate_evaluation_reports_hard_decision_quality() -> None:
+    torch.manual_seed(31)
+    examples = make_examples(distractor_segments=2)
+    decoder = make_decoder(gated=True)
+
+    result = evaluate_memory_required_write_gate(
+        decoder,
+        examples,
+        device="cpu",
+    )
+
+    assert result.segment_count == 6
+    assert result.true_positive == 2
+    assert result.false_positive == 4
+    assert result.false_negative == 0
+    assert result.true_negative == 0
+    assert result.recall == 1.0
+    assert result.false_positive_rate == 1.0
+
+
+def test_gated_training_records_answer_and_write_losses() -> None:
+    torch.manual_seed(37)
+    examples = make_examples(distractor_segments=2)
+    decoder = make_decoder(gated=True)
+    optimizer = torch.optim.AdamW(decoder.parameters(), lr=0.01)
+
+    history = train_memory_required_qa(
+        decoder,
+        optimizer,
+        examples,
+        mode="gated",
+        steps=2,
+        batch_size=2,
+        gradient_clip_norm=1.0,
+        pad_id=ByteTokenizer.special_tokens["<pad>"],
+        device="cpu",
+        seed=41,
+        write_loss_weight=1.0,
+    )
+
+    assert len(history.losses) == 2
+    assert len(history.answer_losses) == 2
+    assert len(history.write_losses) == 2
     assert all(torch.isfinite(torch.tensor(history.losses)))
 
 

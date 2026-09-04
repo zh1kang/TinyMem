@@ -20,9 +20,14 @@ from tinymem.data.sampling import select_reasoning_examples
 from tinymem.evaluation.memory_required_qa import (
     MemoryRequiredQAConditionResult,
     evaluate_memory_required_qa,
+    evaluate_memory_required_write_gate,
 )
 from tinymem.memory.continuous import MeanPoolMemoryCompressor
-from tinymem.memory.recurrent_memory import RecurrentMemoryBank
+from tinymem.memory.recurrent_memory import (
+    GatedRecurrentMemoryBank,
+    RecurrentMemoryBank,
+)
+from tinymem.memory.write_gate import TokenSegmentWriteGate
 from tinymem.model.config import ExperimentConfig
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.transformer import DecoderOnlyTransformer
@@ -46,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--memory-capacity", type=int)
     parser.add_argument(
         "--distractor-write-policy",
-        choices=("all", "none"),
+        choices=("all", "none", "learned"),
         default="all",
     )
     parser.add_argument("--max-new-tokens", type=int, default=16)
@@ -91,10 +96,16 @@ def _load_decoder(
         raise ValueError("checkpoint must contain architecture metadata")
     if extra.get("architecture") != "segmented_memory_required_byte_qa":
         raise ValueError("checkpoint is not a causal memory-required QA model")
-    if extra.get("mode") != "learned":
+    mode = extra.get("mode")
+    if mode not in ("learned", "gated"):
         raise ValueError("frozen evaluation requires a learned-memory checkpoint")
-    if extra.get("compressor") != "mean" or extra.get("memory_update") != "fifo":
-        raise ValueError("checkpoint must use the mean-pool FIFO memory path")
+    if extra.get("compressor") != "mean":
+        raise ValueError("checkpoint must use the mean-pool compressor")
+    memory_update = extra.get("memory_update")
+    if mode == "learned" and memory_update != "fifo":
+        raise ValueError("learned checkpoint must use FIFO memory updates")
+    if mode == "gated" and memory_update != "gated":
+        raise ValueError("gated checkpoint must use gated memory updates")
     if extra.get("memory_position_mode") != "virtual":
         raise ValueError("checkpoint must use virtual memory positions")
 
@@ -123,14 +134,37 @@ def _load_decoder(
     ):
         raise ValueError("checkpoint step must be a nonnegative integer")
 
+    write_gate = None
+    if mode == "gated":
+        if extra.get("write_gate") != "token_conv":
+            raise ValueError("gated checkpoint must use the token-convolution gate")
+        kernel_size = extra.get("write_gate_kernel_size")
+        if (
+            isinstance(kernel_size, bool)
+            or not isinstance(kernel_size, int)
+            or kernel_size <= 0
+            or kernel_size % 2 == 0
+        ):
+            raise ValueError("gated checkpoint has an invalid write-gate kernel size")
+        bank = GatedRecurrentMemoryBank(
+            capacity=evaluation_capacity,
+            model_width=config.model.d_model,
+        )
+        write_gate = TokenSegmentWriteGate(
+            config.model.d_model,
+            kernel_size=kernel_size,
+        )
+    else:
+        bank = RecurrentMemoryBank(
+            capacity=evaluation_capacity,
+            model_width=config.model.d_model,
+        )
     decoder = SegmentedContinuousDecoder(
         DecoderOnlyTransformer(config.model),
         MeanPoolMemoryCompressor(config.model.d_model),
-        RecurrentMemoryBank(
-            capacity=evaluation_capacity,
-            model_width=config.model.d_model,
-        ),
+        bank,
         segment_length=segment_length,
+        write_gate=write_gate,
         memory_position_mode="virtual",
     ).to(device)
     load_checkpoint(checkpoint_path, model=decoder, map_location=device)
@@ -166,6 +200,11 @@ def main() -> None:
         device=device,
     )
     seed_everything(config.seed)
+    checkpoint_mode = extra["mode"]
+    if checkpoint_mode == "gated" and args.distractor_write_policy != "learned":
+        raise ValueError("gated checkpoints require the learned write policy")
+    if checkpoint_mode == "learned" and args.distractor_write_policy == "learned":
+        raise ValueError("FIFO checkpoints do not have a learned write policy")
     distractor_segments = extra.get("distractor_segments")
     if isinstance(distractor_segments, bool) or not isinstance(
         distractor_segments,
@@ -193,10 +232,19 @@ def main() -> None:
     results = evaluate_memory_required_qa(
         decoder,
         examples,
-        mode="learned",
+        mode=str(checkpoint_mode),
         device=device,
         max_new_tokens=args.max_new_tokens,
-        write_distractors=args.distractor_write_policy == "all",
+        write_distractors=args.distractor_write_policy != "none",
+    )
+    write_gate = (
+        evaluate_memory_required_write_gate(
+            decoder,
+            examples,
+            device=device,
+        )
+        if checkpoint_mode == "gated"
+        else None
     )
 
     source_state = current_git_source_state(repository_root)
@@ -226,6 +274,7 @@ def main() -> None:
         "checkpoint": str(checkpoint_path),
         "checkpoint_sha256": _sha256(checkpoint_path),
         "checkpoint_step": checkpoint_step,
+        "checkpoint_mode": checkpoint_mode,
         "checkpoint_memory_capacity": extra["memory_capacity"],
         "evaluation_memory_capacity": evaluation_capacity,
         "distractor_segments": distractor_segments,
@@ -237,6 +286,7 @@ def main() -> None:
         "evaluation_distractor_variant": args.distractor_variant,
         "validation_examples": len(examples),
         "validation_data_sha256": _sha256(babi_root / "qa1_valid.txt"),
+        "write_gate": write_gate.to_dict() if write_gate is not None else None,
         "after": {name: result.to_dict() for name, result in results.items()},
     }
     (run_directory / "results.json").write_text(
@@ -251,6 +301,9 @@ def main() -> None:
                 "distractor_variant": args.distractor_variant,
                 "memory_capacity": evaluation_capacity,
                 "distractor_write_policy": args.distractor_write_policy,
+                "write_gate": (
+                    write_gate.to_dict() if write_gate is not None else None
+                ),
                 "after": {
                     name: {
                         "exact_accuracy": result.exact_accuracy,

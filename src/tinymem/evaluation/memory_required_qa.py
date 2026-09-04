@@ -11,12 +11,15 @@ from torch.nn import functional as F
 
 from tinymem.data.memory_required_qa import MemoryRequiredQAExample
 from tinymem.evaluation.continuous_memory import drop_memory, zero_memory
+from tinymem.memory.recurrent_memory import GatedRecurrentMemoryBank
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.memory_input import AttentionMemory
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.training.memory_required_qa import (
     MEMORY_REQUIRED_MODES,
     attention_memory_from_values,
+    collate_memory_required_distractor,
+    collate_memory_required_support,
     unroll_memory_required_prefix,
 )
 
@@ -48,6 +51,127 @@ class MemoryRequiredQAConditionResult:
             **asdict(self),
             "predictions": [prediction.to_dict() for prediction in self.predictions],
         }
+
+
+@dataclass(frozen=True)
+class MemoryRequiredWriteGateResult:
+    segment_count: int
+    true_positive: int
+    false_positive: int
+    false_negative: int
+    true_negative: int
+    precision: float
+    recall: float
+    false_positive_rate: float
+    accuracy: float
+    mean_support_probability: float
+    mean_distractor_probability: float
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@torch.no_grad()
+def evaluate_memory_required_write_gate(
+    decoder: SegmentedContinuousDecoder,
+    examples: Sequence[MemoryRequiredQAExample],
+    *,
+    device: torch.device | str,
+    batch_size: int = 128,
+) -> MemoryRequiredWriteGateResult:
+    """Measure support-write and distractor-skip decisions."""
+    if not isinstance(decoder, SegmentedContinuousDecoder):
+        raise TypeError("decoder must be a SegmentedContinuousDecoder")
+    if decoder.write_gate is None or not isinstance(
+        decoder.bank,
+        GatedRecurrentMemoryBank,
+    ):
+        raise ValueError("write evaluation requires a token-gated memory bank")
+    if not examples or not all(
+        isinstance(example, MemoryRequiredQAExample) for example in examples
+    ):
+        raise ValueError("examples must contain MemoryRequiredQAExample values")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, Integral):
+        raise TypeError("batch_size must be an integer")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    distractor_counts = {len(example.distractor_ids) for example in examples}
+    if len(distractor_counts) != 1 or next(iter(distractor_counts)) == 0:
+        raise ValueError("write evaluation requires one shared positive distractor count")
+    distractor_count = next(iter(distractor_counts))
+
+    probabilities = []
+    targets = []
+    was_training = decoder.training
+    decoder.eval()
+    try:
+        for start in range(0, len(examples), int(batch_size)):
+            batch = examples[start : start + int(batch_size)]
+            support_ids, support_valid = collate_memory_required_support(
+                batch,
+                pad_id=ByteTokenizer.special_tokens["<pad>"],
+                device=device,
+            )
+            support_probabilities = decoder.write_gate(
+                decoder.model.token_embedding(support_ids).detach(),
+                support_valid,
+            ).sigmoid()
+            probabilities.append(support_probabilities.cpu())
+            targets.append(
+                torch.ones_like(
+                    support_probabilities,
+                    dtype=torch.bool,
+                ).cpu()
+            )
+            for distractor_index in range(distractor_count):
+                distractor_ids, distractor_valid = (
+                    collate_memory_required_distractor(
+                        batch,
+                        distractor_index,
+                        pad_id=ByteTokenizer.special_tokens["<pad>"],
+                        device=device,
+                    )
+                )
+                distractor_probabilities = decoder.write_gate(
+                    decoder.model.token_embedding(distractor_ids).detach(),
+                    distractor_valid,
+                ).sigmoid()
+                probabilities.append(distractor_probabilities.cpu())
+                targets.append(
+                    torch.zeros_like(
+                        distractor_probabilities,
+                        dtype=torch.bool,
+                    ).cpu()
+                )
+    finally:
+        decoder.train(was_training)
+
+    probability = torch.cat(probabilities).flatten()
+    target = torch.cat(targets).flatten()
+    predicted = probability >= decoder.bank.write_threshold
+    true_positive = int((predicted & target).sum())
+    false_positive = int((predicted & ~target).sum())
+    false_negative = int((~predicted & target).sum())
+    true_negative = int((~predicted & ~target).sum())
+    positive_count = true_positive + false_negative
+    negative_count = false_positive + true_negative
+    return MemoryRequiredWriteGateResult(
+        segment_count=probability.numel(),
+        true_positive=true_positive,
+        false_positive=false_positive,
+        false_negative=false_negative,
+        true_negative=true_negative,
+        precision=(
+            true_positive / (true_positive + false_positive)
+            if true_positive + false_positive > 0
+            else 0.0
+        ),
+        recall=true_positive / positive_count,
+        false_positive_rate=false_positive / negative_count,
+        accuracy=(true_positive + true_negative) / probability.numel(),
+        mean_support_probability=float(probability[target].mean()),
+        mean_distractor_probability=float(probability[~target].mean()),
+    )
 
 
 def _empty_memory(

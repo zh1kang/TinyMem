@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from numbers import Integral, Real
 
 import torch
+from torch.nn import functional as F
 from torch.optim import Optimizer
 
 from tinymem.data.memory_required_qa import MemoryRequiredQAExample
@@ -20,13 +21,15 @@ from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.training.losses import next_token_cross_entropy
 
 
-MEMORY_REQUIRED_MODES = ("oracle", "learned")
+MEMORY_REQUIRED_MODES = ("oracle", "learned", "gated")
 StepCallback = Callable[[int, float], None]
 
 
 @dataclass(frozen=True)
 class MemoryRequiredQATrainingHistory:
     losses: tuple[float, ...]
+    answer_losses: tuple[float, ...] = ()
+    write_losses: tuple[float, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -180,6 +183,59 @@ def collate_memory_required_distractor(
         )
         token_valid[row, :length] = True
     return input_ids, token_valid
+
+
+def memory_required_write_gate_loss(
+    decoder: SegmentedContinuousDecoder,
+    examples: Sequence[MemoryRequiredQAExample],
+    *,
+    pad_id: int,
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Return balanced support-write and distractor-skip supervision."""
+    if not isinstance(decoder, SegmentedContinuousDecoder):
+        raise TypeError("decoder must be a SegmentedContinuousDecoder")
+    if decoder.write_gate is None:
+        raise ValueError("write-gate loss requires a token segment write gate")
+    if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
+        raise TypeError("examples must be a sequence")
+    if not examples or not all(
+        isinstance(example, MemoryRequiredQAExample) for example in examples
+    ):
+        raise ValueError("examples must contain MemoryRequiredQAExample values")
+    distractor_counts = {len(example.distractor_ids) for example in examples}
+    if len(distractor_counts) != 1:
+        raise ValueError("all examples in a batch must have equal distractor counts")
+    distractor_count = next(iter(distractor_counts))
+    if distractor_count == 0:
+        raise ValueError("write-gate supervision requires distractor segments")
+    support_ids, support_valid = collate_memory_required_support(
+        examples,
+        pad_id=pad_id,
+        device=device,
+    )
+    support_logits = decoder.write_gate(
+        decoder.model.token_embedding(support_ids).detach(),
+        support_valid,
+    )
+    positive_loss = F.softplus(-support_logits).mean()
+
+    distractor_logits = []
+    for distractor_index in range(distractor_count):
+        distractor_ids, distractor_valid = collate_memory_required_distractor(
+            examples,
+            distractor_index,
+            pad_id=pad_id,
+            device=device,
+        )
+        distractor_logits.append(
+            decoder.write_gate(
+                decoder.model.token_embedding(distractor_ids).detach(),
+                distractor_valid,
+            )
+        )
+    negative_loss = F.softplus(torch.cat(distractor_logits, dim=1)).mean()
+    return (positive_loss + negative_loss) / 2
 
 
 def _output_memory(output: SegmentedContinuousOutput) -> AttentionMemory:
@@ -351,9 +407,10 @@ def train_memory_required_qa(
     seed: int,
     oracle_values: torch.Tensor | None = None,
     write_distractors: bool = True,
+    write_loss_weight: float = 0.0,
     on_step: StepCallback | None = None,
 ) -> MemoryRequiredQATrainingHistory:
-    """Train either the reader with oracle slots or the complete memory path."""
+    """Train the oracle reader, FIFO writer, or supervised gated writer."""
     if not isinstance(decoder, SegmentedContinuousDecoder):
         raise TypeError("decoder must be a SegmentedContinuousDecoder")
     if not isinstance(optimizer, Optimizer):
@@ -391,11 +448,29 @@ def train_memory_required_qa(
         raise ValueError("oracle_values are valid only in oracle mode")
     if not isinstance(write_distractors, bool):
         raise TypeError("write_distractors must be a boolean")
+    if isinstance(write_loss_weight, bool) or not isinstance(
+        write_loss_weight,
+        Real,
+    ):
+        raise TypeError("write_loss_weight must be a real number")
+    if write_loss_weight < 0:
+        raise ValueError("write_loss_weight must be nonnegative")
+    if mode == "gated":
+        if decoder.write_gate is None:
+            raise ValueError("gated mode requires a token segment write gate")
+        if not write_distractors:
+            raise ValueError("gated mode must evaluate learned distractor decisions")
+        if write_loss_weight <= 0:
+            raise ValueError("gated mode requires positive write_loss_weight")
+    elif write_loss_weight > 0:
+        raise ValueError("write_loss_weight is valid only in gated mode")
     if on_step is not None and not callable(on_step):
         raise TypeError("on_step must be callable or None")
 
     generator = torch.Generator().manual_seed(int(seed))
     losses = []
+    answer_losses = []
+    write_losses = []
     decoder.train()
     for step in range(1, int(steps) + 1):
         indices = torch.randint(
@@ -446,16 +521,33 @@ def train_memory_required_qa(
                 position_offset=batch[0].query_position_offset,
                 update_memory=False,
             )
-        loss = next_token_cross_entropy(output.logits, target_ids)
+        answer_loss = next_token_cross_entropy(output.logits, target_ids)
+        loss = answer_loss
+        write_loss = None
+        if mode == "gated":
+            write_loss = memory_required_write_gate_loss(
+                decoder,
+                batch,
+                pad_id=pad_id,
+                device=device,
+            )
+            loss = loss + float(write_loss_weight) * write_loss
         if not torch.isfinite(loss):
             raise RuntimeError("memory-required QA training produced nonfinite loss")
         loss.backward()
         torch.nn.utils.clip_grad_norm_(decoder.parameters(), gradient_clip_norm)
         optimizer.step()
         losses.append(float(loss.detach().cpu()))
+        answer_losses.append(float(answer_loss.detach().cpu()))
+        if write_loss is not None:
+            write_losses.append(float(write_loss.detach().cpu()))
         if on_step is not None:
             on_step(step, losses[-1])
-    return MemoryRequiredQATrainingHistory(losses=tuple(losses))
+    return MemoryRequiredQATrainingHistory(
+        losses=tuple(losses),
+        answer_losses=tuple(answer_losses),
+        write_losses=tuple(write_losses),
+    )
 
 
 def audit_cross_segment_gradients(
