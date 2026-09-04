@@ -17,7 +17,11 @@ from torch import nn
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 
-from tinymem.data.replacement_qa import generate_replacement_qa_examples
+from tinymem.data.replacement_manifest import replacement_manifest
+from tinymem.data.replacement_qa import (
+    REPLACEMENT_PROTOCOLS,
+    generate_replacement_qa_examples,
+)
 from tinymem.evaluation.replacement_qa import (
     ReplacementQAEvaluation,
     evaluate_replacement_qa,
@@ -56,6 +60,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-new-tokens", type=int, default=16)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--data-seed", type=int)
+    parser.add_argument(
+        "--data-protocol", choices=REPLACEMENT_PROTOCOLS,
+        default="history_disjoint_v2",
+    )
     parser.add_argument("--validation-seed", type=int, default=10_000)
     parser.add_argument("--progress-every", type=int, default=100)
     parser.add_argument(
@@ -162,6 +171,11 @@ def main() -> None:
         raise ValueError("example counts must be multiples of memory_capacity squared")
     if args.seed < 0 or args.validation_seed < 0:
         raise ValueError("seeds must be nonnegative")
+    data_seed = args.data_seed
+    if data_seed is None:
+        data_seed = args.seed if args.data_protocol == "legacy_seed_v1" else 0
+    if data_seed < 0:
+        raise ValueError("data_seed must be nonnegative")
 
     repository_root = Path(__file__).resolve().parents[1]
     checkpoint_path = args.checkpoint.resolve()
@@ -195,7 +209,8 @@ def main() -> None:
         count=args.train_examples,
         memory_capacity=args.memory_capacity,
         segment_length=args.segment_length,
-        base_seed=args.seed,
+        base_seed=data_seed,
+        protocol=args.data_protocol,
     )
     validation_examples = generate_replacement_qa_examples(
         tokenizer,
@@ -204,7 +219,45 @@ def main() -> None:
         memory_capacity=args.memory_capacity,
         segment_length=args.segment_length,
         base_seed=args.validation_seed,
+        protocol=args.data_protocol,
     )
+    manifest = replacement_manifest(
+        train_examples, validation_examples, protocol=args.data_protocol,
+        data_seed=data_seed, validation_seed=args.validation_seed,
+    )
+    experiment_config = replace(
+        loaded.config,
+        seed=args.seed,
+        stream=replace(loaded.config.stream, segment_length=args.segment_length),
+        memory=replace(loaded.config.memory, n_slots=args.memory_capacity),
+        training=replace(
+            loaded.config.training,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            batch_size=args.batch_size,
+            gradient_clip_norm=args.gradient_clip_norm,
+            warmup_steps=0,
+            max_steps=args.steps,
+        ),
+    )
+    source_state = current_git_source_state(repository_root)
+    run_directory = create_run_directory(
+        repository_root / args.artifact_root / f"capacity_{args.memory_capacity}"
+        / f"seed_{args.seed}",
+        experiment_config,
+        git_commit=source_state.commit,
+        source_state=source_state,
+    )
+    manifest_path = run_directory / "data_manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+    )
+    data_metadata = {
+        "data_protocol": args.data_protocol,
+        "data_seed": data_seed,
+        "validation_seed": args.validation_seed,
+        "data_manifest_sha256": _sha256(manifest_path),
+    }
     optimizer = torch.optim.AdamW(
         (*decoder.parameters(), *controller.parameters()),
         lr=args.learning_rate,
@@ -255,34 +308,6 @@ def main() -> None:
         max_new_tokens=args.max_new_tokens,
     )
 
-    experiment_config = replace(
-        loaded.config,
-        seed=args.seed,
-        stream=replace(
-            loaded.config.stream,
-            segment_length=args.segment_length,
-        ),
-        memory=replace(loaded.config.memory, n_slots=args.memory_capacity),
-        training=replace(
-            loaded.config.training,
-            learning_rate=args.learning_rate,
-            weight_decay=args.weight_decay,
-            batch_size=args.batch_size,
-            gradient_clip_norm=args.gradient_clip_norm,
-            warmup_steps=0,
-            max_steps=args.steps,
-        ),
-    )
-    source_state = current_git_source_state(repository_root)
-    run_directory = create_run_directory(
-        repository_root
-        / args.artifact_root
-        / f"capacity_{args.memory_capacity}"
-        / f"seed_{args.seed}",
-        experiment_config,
-        git_commit=source_state.commit,
-        source_state=source_state,
-    )
     system = nn.ModuleDict({"decoder": decoder, "controller": controller})
     checkpoint_output = run_directory / "checkpoint.pt"
     save_checkpoint(
@@ -292,6 +317,7 @@ def main() -> None:
         step=args.steps,
         config=experiment_config,
         extra={
+            **data_metadata,
             "architecture": "content_aware_replacement_qa",
             "parent_checkpoint": str(checkpoint_path),
             "parent_checkpoint_sha256": _sha256(checkpoint_path),
@@ -310,6 +336,7 @@ def main() -> None:
         },
     )
     result_document = {
+        **data_metadata,
         "status": "development_content_aware_replacement",
         "gate_passed": _passes_gate(result),
         "seed": args.seed,
