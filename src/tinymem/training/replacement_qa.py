@@ -19,7 +19,6 @@ from tinymem.memory.replacement import (
 from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
 from tinymem.model.memory_input import AttentionMemory
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
-from tinymem.training.losses import next_token_cross_entropy
 
 
 StepCallback = Callable[[int, float], None]
@@ -117,6 +116,68 @@ def collate_replacement_query(
             answer_start:answer_end,
         ]
     return input_ids, targets, valid
+
+
+def replacement_answer_loss(
+    logits: torch.Tensor,
+    target_ids: torch.Tensor,
+    examples: Sequence[ReplacementQAExample],
+    *,
+    semantic_prefix_bytes: int = 2,
+    semantic_prefix_weight: float = 8.0,
+) -> torch.Tensor:
+    """Emphasize bytes that select the answer while retaining full-word loss."""
+    if not isinstance(logits, torch.Tensor) or not isinstance(
+        target_ids,
+        torch.Tensor,
+    ):
+        raise TypeError("logits and target_ids must be torch.Tensor values")
+    if logits.ndim != 3 or target_ids.shape != logits.shape[:2]:
+        raise ValueError("logits and target_ids must share batch and token shapes")
+    if not logits.is_floating_point():
+        raise TypeError("logits must be floating point")
+    if target_ids.dtype not in (torch.int32, torch.int64):
+        raise TypeError("target_ids must be integer")
+    if len(examples) != logits.shape[0] or not all(
+        isinstance(example, ReplacementQAExample) for example in examples
+    ):
+        raise ValueError("examples must match the logits batch")
+    if isinstance(semantic_prefix_bytes, bool) or not isinstance(
+        semantic_prefix_bytes,
+        Integral,
+    ):
+        raise TypeError("semantic_prefix_bytes must be an integer")
+    if semantic_prefix_bytes <= 0:
+        raise ValueError("semantic_prefix_bytes must be positive")
+    if isinstance(semantic_prefix_weight, bool) or not isinstance(
+        semantic_prefix_weight,
+        Real,
+    ):
+        raise TypeError("semantic_prefix_weight must be a real number")
+    if semantic_prefix_weight < 1:
+        raise ValueError("semantic_prefix_weight must be at least one")
+
+    shifted_targets = target_ids[:, 1:]
+    invalid = (shifted_targets != -100) & (
+        (shifted_targets < 0) | (shifted_targets >= logits.shape[-1])
+    )
+    if invalid.any():
+        raise ValueError("target IDs must be in the vocabulary or equal -100")
+    losses = F.cross_entropy(
+        logits[:, :-1].reshape(-1, logits.shape[-1]),
+        shifted_targets.reshape(-1),
+        ignore_index=-100,
+        reduction="none",
+    ).reshape_as(shifted_targets)
+    weights = (shifted_targets != -100).to(dtype=logits.dtype)
+    for row, example in enumerate(examples):
+        prefix_start = len(example.query_ids) - 1
+        prefix_end = prefix_start + min(
+            int(semantic_prefix_bytes),
+            len(example.answer_ids),
+        )
+        weights[row, prefix_start:prefix_end] = float(semantic_prefix_weight)
+    return (losses * weights).sum() / weights.sum()
 
 
 def _summarize_sequences(
@@ -245,6 +306,8 @@ def train_replacement_qa(
     slot_pretrain_steps: int,
     batch_size: int,
     replacement_loss_weight: float,
+    semantic_prefix_bytes: int,
+    semantic_prefix_weight: float,
     gradient_clip_norm: float,
     pad_id: int,
     device: torch.device | str,
@@ -263,22 +326,31 @@ def train_replacement_qa(
         ("steps", steps),
         ("slot_pretrain_steps", slot_pretrain_steps),
         ("batch_size", batch_size),
+        ("semantic_prefix_bytes", semantic_prefix_bytes),
         ("seed", seed),
     ):
         if isinstance(value, bool) or not isinstance(value, Integral):
             raise TypeError(f"{name} must be an integer")
-    if steps <= 0 or batch_size <= 0 or seed < 0:
+    if steps <= 0 or batch_size <= 0 or semantic_prefix_bytes <= 0 or seed < 0:
         raise ValueError("training counts must be positive and seed nonnegative")
     if not 0 <= slot_pretrain_steps < steps:
         raise ValueError("slot_pretrain_steps must be in [0, steps)")
     for name, value in (
         ("replacement_loss_weight", replacement_loss_weight),
+        ("semantic_prefix_weight", semantic_prefix_weight),
         ("gradient_clip_norm", gradient_clip_norm),
     ):
         if isinstance(value, bool) or not isinstance(value, Real):
             raise TypeError(f"{name} must be a real number")
-    if replacement_loss_weight < 0 or gradient_clip_norm <= 0:
-        raise ValueError("loss weight must be nonnegative and clip norm positive")
+    if (
+        replacement_loss_weight < 0
+        or semantic_prefix_weight < 1
+        or gradient_clip_norm <= 0
+    ):
+        raise ValueError(
+            "replacement weight must be nonnegative, prefix weight at least one, "
+            "and clip norm positive"
+        )
     if on_step is not None and not callable(on_step):
         raise TypeError("on_step must be callable or None")
 
@@ -316,7 +388,13 @@ def train_replacement_qa(
             position_offset=batch[0].query_position_offset,
             update_memory=False,
         )
-        answer_loss = next_token_cross_entropy(output.logits, target_ids)
+        answer_loss = replacement_answer_loss(
+            output.logits,
+            target_ids,
+            batch,
+            semantic_prefix_bytes=int(semantic_prefix_bytes),
+            semantic_prefix_weight=float(semantic_prefix_weight),
+        )
         targets = torch.tensor(
             [example.correction_slot for example in batch],
             dtype=torch.long,

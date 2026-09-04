@@ -20,6 +20,7 @@ from tinymem.training.losses import next_token_cross_entropy
 from tinymem.training.replacement_qa import (
     build_replacement_memory,
     collate_replacement_query,
+    replacement_answer_loss,
     train_replacement_qa,
 )
 
@@ -165,6 +166,46 @@ def test_answer_loss_reaches_correction_summary_and_replacement_controller() -> 
     assert torch.count_nonzero(controller.pair_projection.weight.grad) > 0
 
 
+def test_replacement_answer_loss_emphasizes_semantic_prefix_bytes() -> None:
+    examples = make_examples(count=2)
+    input_ids, targets, _ = collate_replacement_query(
+        examples,
+        pad_id=ByteTokenizer.special_tokens["<pad>"],
+        device="cpu",
+    )
+    logits = torch.zeros(
+        input_ids.shape[0],
+        input_ids.shape[1],
+        ByteTokenizer.vocab_size,
+        requires_grad=True,
+    )
+
+    ordinary = replacement_answer_loss(
+        logits,
+        targets,
+        examples,
+        semantic_prefix_bytes=2,
+        semantic_prefix_weight=1.0,
+    )
+    emphasized = replacement_answer_loss(
+        logits,
+        targets,
+        examples,
+        semantic_prefix_bytes=2,
+        semantic_prefix_weight=8.0,
+    )
+    emphasized.backward()
+
+    torch.testing.assert_close(ordinary, emphasized)
+    first_prediction_index = len(examples[0].query_ids) - 1
+    final_prediction_index = (
+        len(examples[0].query_ids) + len(examples[0].answer_ids) - 1
+    )
+    first_gradient = logits.grad[0, first_prediction_index].abs().sum()
+    final_gradient = logits.grad[0, final_prediction_index].abs().sum()
+    assert first_gradient > final_gradient
+
+
 def test_replacement_training_and_causal_evaluation_smoke() -> None:
     torch.manual_seed(7)
     decoder = make_decoder(capacity=2)
@@ -184,6 +225,8 @@ def test_replacement_training_and_causal_evaluation_smoke() -> None:
         slot_pretrain_steps=1,
         batch_size=2,
         replacement_loss_weight=1.0,
+        semantic_prefix_bytes=2,
+        semantic_prefix_weight=8.0,
         gradient_clip_norm=1.0,
         pad_id=ByteTokenizer.special_tokens["<pad>"],
         device="cpu",

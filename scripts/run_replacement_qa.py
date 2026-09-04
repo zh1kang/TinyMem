@@ -50,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--replacement-loss-weight", type=float, default=1.0)
+    parser.add_argument("--semantic-prefix-bytes", type=int, default=2)
+    parser.add_argument("--semantic-prefix-weight", type=float, default=8.0)
     parser.add_argument("--gradient-clip-norm", type=float, default=1.0)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-new-tokens", type=int, default=16)
@@ -138,6 +140,7 @@ def main() -> None:
         "validation_examples",
         "steps",
         "batch_size",
+        "semantic_prefix_bytes",
         "max_new_tokens",
         "progress_every",
     ):
@@ -149,6 +152,8 @@ def main() -> None:
         raise ValueError("learning rate and gradient clip norm must be positive")
     if args.weight_decay < 0 or args.replacement_loss_weight < 0:
         raise ValueError("weight decay and replacement loss weight must be nonnegative")
+    if args.semantic_prefix_weight < 1:
+        raise ValueError("semantic_prefix_weight must be at least one")
     balance_period = args.memory_capacity**2
     if (
         args.train_examples % balance_period != 0
@@ -233,6 +238,8 @@ def main() -> None:
         slot_pretrain_steps=args.slot_pretrain_steps,
         batch_size=args.batch_size,
         replacement_loss_weight=args.replacement_loss_weight,
+        semantic_prefix_bytes=args.semantic_prefix_bytes,
+        semantic_prefix_weight=args.semantic_prefix_weight,
         gradient_clip_norm=args.gradient_clip_norm,
         pad_id=tokenizer.special_tokens["<pad>"],
         device=device,
@@ -296,6 +303,8 @@ def main() -> None:
             "temperature": args.temperature,
             "slot_pretrain_steps": args.slot_pretrain_steps,
             "replacement_loss_weight": args.replacement_loss_weight,
+            "semantic_prefix_bytes": args.semantic_prefix_bytes,
+            "semantic_prefix_weight": args.semantic_prefix_weight,
             "answer_only_loss": True,
         },
     )
@@ -320,6 +329,8 @@ def main() -> None:
         "learning_rate": args.learning_rate,
         "weight_decay": args.weight_decay,
         "replacement_loss_weight": args.replacement_loss_weight,
+        "semantic_prefix_bytes": args.semantic_prefix_bytes,
+        "semantic_prefix_weight": args.semantic_prefix_weight,
         "gradient_clip_norm": args.gradient_clip_norm,
         "temperature": args.temperature,
         "training_seconds": training_seconds,
