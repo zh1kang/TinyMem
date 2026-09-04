@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--segment-length", type=int, default=512)
     parser.add_argument("--train-examples", type=int, default=1_000)
     parser.add_argument("--validation-examples", type=int, default=100)
+    parser.add_argument("--distractor-segments", type=int, default=0)
     parser.add_argument("--steps", type=int, default=2_000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -136,6 +137,8 @@ def main() -> None:
         raise ValueError("learning rate and gradient clip norm must be positive")
     if args.weight_decay < 0:
         raise ValueError("weight decay must be nonnegative")
+    if args.distractor_segments < 0:
+        raise ValueError("distractor_segments must be nonnegative")
     if args.seed < 0 or args.validation_seed < 0:
         raise ValueError("seeds must be nonnegative")
 
@@ -151,8 +154,9 @@ def main() -> None:
 
     decoder = loaded.decoder
     decoder.segment_length = args.segment_length
+    memory_capacity = 1 + args.distractor_segments
     decoder.bank = RecurrentMemoryBank(
-        capacity=1,
+        capacity=memory_capacity,
         model_width=decoder.model.config.d_model,
     ).to(device)
     decoder.memory_position_mode = "virtual"
@@ -176,6 +180,7 @@ def main() -> None:
         ),
         tokenizer,
         segment_length=args.segment_length,
+        distractor_segments=args.distractor_segments,
     )
     validation_examples = build_memory_required_qa_examples(
         select_reasoning_examples(
@@ -185,6 +190,7 @@ def main() -> None:
         ),
         tokenizer,
         segment_length=args.segment_length,
+        distractor_segments=args.distractor_segments,
     )
 
     oracle_train = None
@@ -291,7 +297,7 @@ def main() -> None:
             loaded.config.stream,
             segment_length=args.segment_length,
         ),
-        memory=replace(loaded.config.memory, n_slots=1),
+        memory=replace(loaded.config.memory, n_slots=memory_capacity),
         training=replace(
             loaded.config.training,
             learning_rate=args.learning_rate,
@@ -304,7 +310,11 @@ def main() -> None:
     )
     source_state = current_git_source_state(repository_root)
     run_directory = create_run_directory(
-        repository_root / args.artifact_root / args.mode / f"seed_{args.seed}",
+        repository_root
+        / args.artifact_root
+        / args.mode
+        / f"distractors_{args.distractor_segments}"
+        / f"seed_{args.seed}",
         experiment_config,
         git_commit=source_state.commit,
         source_state=source_state,
@@ -322,12 +332,12 @@ def main() -> None:
             "parent_checkpoint": str(checkpoint_path),
             "parent_checkpoint_sha256": _sha256(checkpoint_path),
             "segment_length": args.segment_length,
-            "memory_capacity": 1,
+            "memory_capacity": memory_capacity,
             "memory_position_mode": "virtual",
             "compressor": "mean",
             "memory_update": "fifo",
             "answer_only_loss": True,
-            "distractors": False,
+            "distractor_segments": args.distractor_segments,
         },
     )
     result_document = {
@@ -345,7 +355,8 @@ def main() -> None:
         "checkpoint": str(checkpoint_output),
         "checkpoint_sha256": _sha256(checkpoint_output),
         "segment_length": args.segment_length,
-        "memory_capacity": 1,
+        "memory_capacity": memory_capacity,
+        "distractor_segments": args.distractor_segments,
         "memory_position_mode": "virtual",
         "train_examples": len(train_examples),
         "validation_examples": len(validation_examples),

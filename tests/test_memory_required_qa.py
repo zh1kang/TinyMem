@@ -11,14 +11,16 @@ from tinymem.model.transformer import DecoderOnlyTransformer
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.training.memory_required_qa import (
     audit_cross_segment_gradients,
+    collate_memory_required_distractor,
     collate_memory_required_query,
     collate_memory_required_support,
     precompute_oracle_memories,
     train_memory_required_qa,
+    unroll_memory_required_prefix,
 )
 
 
-def make_examples():
+def make_examples(distractor_segments: int = 0):
     source = parse_babi_lines(
         [
             "1 Mary moved to the kitchen.\n",
@@ -34,10 +36,11 @@ def make_examples():
         source,
         ByteTokenizer(),
         segment_length=64,
+        distractor_segments=distractor_segments,
     )
 
 
-def make_decoder() -> SegmentedContinuousDecoder:
+def make_decoder(memory_capacity: int = 1) -> SegmentedContinuousDecoder:
     config = ModelConfig(
         vocab_size=ByteTokenizer.vocab_size,
         d_model=8,
@@ -50,7 +53,7 @@ def make_decoder() -> SegmentedContinuousDecoder:
     return SegmentedContinuousDecoder(
         DecoderOnlyTransformer(config),
         MeanPoolMemoryCompressor(config.d_model),
-        RecurrentMemoryBank(capacity=1, model_width=config.d_model),
+        RecurrentMemoryBank(capacity=memory_capacity, model_width=config.d_model),
         segment_length=64,
         memory_position_mode="virtual",
     )
@@ -64,6 +67,15 @@ def test_memory_required_examples_place_only_support_in_first_segment() -> None:
         assert len(example.support_ids) < example.segment_length
         assert example.query_ids[0] == ord("Q")
         assert len(example.query_ids) + len(example.answer_ids) + 1 <= 64
+
+
+def test_memory_required_examples_place_distractors_before_query() -> None:
+    examples = make_examples(distractor_segments=2)
+
+    for example in examples:
+        assert len(example.distractor_ids) == 2
+        assert all(len(distractor) <= 64 for distractor in example.distractor_ids)
+        assert example.query_position_offset == 3 * 64
 
 
 def test_memory_required_collation_supervises_only_the_answer() -> None:
@@ -110,6 +122,37 @@ def test_support_padding_is_invalid_and_does_not_change_memory() -> None:
         )
 
 
+def test_distractors_unroll_into_separate_valid_memory_slots() -> None:
+    torch.manual_seed(17)
+    examples = make_examples(distractor_segments=2)
+    decoder = make_decoder(memory_capacity=3).eval()
+
+    memory = unroll_memory_required_prefix(
+        decoder,
+        examples,
+        pad_id=ByteTokenizer.special_tokens["<pad>"],
+        device="cpu",
+    )
+
+    assert memory.valid.all()
+    for row, example in enumerate(examples):
+        assert memory.positions[row].tolist() == [
+            len(example.support_ids) - 1,
+            64 + len(example.distractor_ids[0]) - 1,
+            128 + len(example.distractor_ids[1]) - 1,
+        ]
+    distractor_ids, distractor_valid = collate_memory_required_distractor(
+        examples,
+        1,
+        pad_id=ByteTokenizer.special_tokens["<pad>"],
+        device="cpu",
+    )
+    assert distractor_ids.shape == distractor_valid.shape
+    assert distractor_valid.sum(dim=1).tolist() == [
+        len(example.distractor_ids[1]) for example in examples
+    ]
+
+
 def test_oracle_reader_training_uses_precomputed_support_slots() -> None:
     torch.manual_seed(3)
     examples = make_examples()
@@ -142,8 +185,8 @@ def test_oracle_reader_training_uses_precomputed_support_slots() -> None:
 
 def test_task_gradient_reaches_writer_only_when_memory_is_read() -> None:
     torch.manual_seed(5)
-    decoder = make_decoder()
-    example = make_examples()[0]
+    decoder = make_decoder(memory_capacity=3)
+    example = make_examples(distractor_segments=2)[0]
 
     normal = audit_cross_segment_gradients(
         decoder,
@@ -170,8 +213,8 @@ def test_task_gradient_reaches_writer_only_when_memory_is_read() -> None:
 
 def test_memory_required_evaluation_runs_all_causal_conditions() -> None:
     torch.manual_seed(13)
-    decoder = make_decoder()
-    examples = make_examples()
+    decoder = make_decoder(memory_capacity=3)
+    examples = make_examples(distractor_segments=2)
     oracle_values = precompute_oracle_memories(
         decoder,
         examples,

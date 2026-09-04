@@ -1,4 +1,4 @@
-"""Training and gradient diagnostics for two-segment byte QA."""
+"""Training and gradient diagnostics for segmented byte QA."""
 
 from __future__ import annotations
 
@@ -11,7 +11,10 @@ import torch
 from torch.optim import Optimizer
 
 from tinymem.data.memory_required_qa import MemoryRequiredQAExample
-from tinymem.model.continuous_decoder import SegmentedContinuousDecoder
+from tinymem.model.continuous_decoder import (
+    SegmentedContinuousDecoder,
+    SegmentedContinuousOutput,
+)
 from tinymem.model.memory_input import AttentionMemory
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.training.losses import next_token_cross_entropy
@@ -127,6 +130,121 @@ def collate_memory_required_support(
         )
         token_valid[row, :length] = True
     return input_ids, token_valid
+
+
+def collate_memory_required_distractor(
+    examples: Sequence[MemoryRequiredQAExample],
+    distractor_index: int,
+    *,
+    pad_id: int,
+    device: torch.device | str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Right-pad one aligned distractor segment for a batch."""
+    if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
+        raise TypeError("examples must be a sequence")
+    if not examples or not all(
+        isinstance(example, MemoryRequiredQAExample) for example in examples
+    ):
+        raise ValueError("examples must contain MemoryRequiredQAExample values")
+    if isinstance(distractor_index, bool) or not isinstance(
+        distractor_index,
+        Integral,
+    ):
+        raise TypeError("distractor_index must be an integer")
+    distractor_counts = {len(example.distractor_ids) for example in examples}
+    if len(distractor_counts) != 1:
+        raise ValueError("all examples in a batch must have equal distractor counts")
+    distractor_count = next(iter(distractor_counts))
+    if not 0 <= distractor_index < distractor_count:
+        raise ValueError("distractor_index is out of range")
+    if isinstance(pad_id, bool) or not isinstance(pad_id, Integral):
+        raise TypeError("pad_id must be an integer")
+    if not 0 <= pad_id < ByteTokenizer.vocab_size:
+        raise ValueError("pad_id must be in the byte-token vocabulary")
+
+    sequences = [example.distractor_ids[distractor_index] for example in examples]
+    max_length = max(map(len, sequences))
+    input_ids = torch.full(
+        (len(examples), max_length),
+        int(pad_id),
+        dtype=torch.long,
+        device=device,
+    )
+    token_valid = torch.zeros_like(input_ids, dtype=torch.bool)
+    for row, sequence in enumerate(sequences):
+        length = len(sequence)
+        input_ids[row, :length] = torch.tensor(
+            sequence,
+            dtype=torch.long,
+            device=device,
+        )
+        token_valid[row, :length] = True
+    return input_ids, token_valid
+
+
+def _output_memory(output: SegmentedContinuousOutput) -> AttentionMemory:
+    return AttentionMemory(
+        values=output.memory,
+        valid=output.memory_valid,
+        positions=output.memory_positions,
+    )
+
+
+def unroll_memory_required_prefix(
+    decoder: SegmentedContinuousDecoder,
+    examples: Sequence[MemoryRequiredQAExample],
+    *,
+    pad_id: int,
+    device: torch.device | str,
+    initial_memory: AttentionMemory | None = None,
+) -> AttentionMemory:
+    """Write support and each distractor while preserving the autograd graph."""
+    if not isinstance(decoder, SegmentedContinuousDecoder):
+        raise TypeError("decoder must be a SegmentedContinuousDecoder")
+    if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
+        raise TypeError("examples must be a sequence")
+    if not examples or not all(
+        isinstance(example, MemoryRequiredQAExample) for example in examples
+    ):
+        raise ValueError("examples must contain MemoryRequiredQAExample values")
+    distractor_counts = {len(example.distractor_ids) for example in examples}
+    if len(distractor_counts) != 1:
+        raise ValueError("all examples in a batch must have equal distractor counts")
+    distractor_count = next(iter(distractor_counts))
+    required_capacity = 1 + distractor_count
+    if decoder.bank.capacity < required_capacity:
+        raise ValueError(
+            "memory capacity must retain support and every distractor summary"
+        )
+
+    if initial_memory is None:
+        support_ids, support_valid = collate_memory_required_support(
+            examples,
+            pad_id=pad_id,
+            device=device,
+        )
+        memory = _output_memory(decoder(support_ids, support_valid))
+    else:
+        if not isinstance(initial_memory, AttentionMemory):
+            raise TypeError("initial_memory must be an AttentionMemory or None")
+        memory = initial_memory
+
+    for distractor_index in range(distractor_count):
+        distractor_ids, distractor_valid = collate_memory_required_distractor(
+            examples,
+            distractor_index,
+            pad_id=pad_id,
+            device=device,
+        )
+        memory = _output_memory(
+            decoder(
+                distractor_ids,
+                distractor_valid,
+                initial_memory=memory,
+                position_offset=(distractor_index + 1) * decoder.segment_length,
+            )
+        )
+    return memory
 
 
 def attention_memory_from_values(
@@ -293,32 +411,35 @@ def train_memory_required_qa(
         if mode == "oracle":
             assert oracle_values is not None
             values = oracle_values[indices].to(device=device)
-            output = decoder(
-                input_ids,
-                token_valid,
+            memory = unroll_memory_required_prefix(
+                decoder,
+                batch,
+                pad_id=pad_id,
+                device=device,
                 initial_memory=attention_memory_from_values(
                     values,
                     segment_length=decoder.segment_length,
                 ),
-                position_offset=decoder.segment_length,
+            )
+            output = decoder(
+                input_ids,
+                token_valid,
+                initial_memory=memory,
+                position_offset=batch[0].query_position_offset,
                 update_memory=False,
             )
         else:
-            support_ids, support_valid = collate_memory_required_support(
+            memory = unroll_memory_required_prefix(
+                decoder,
                 batch,
                 pad_id=pad_id,
                 device=device,
             )
-            support_output = decoder(support_ids, support_valid)
             output = decoder(
                 input_ids,
                 token_valid,
-                initial_memory=AttentionMemory(
-                    values=support_output.memory,
-                    valid=support_output.memory_valid,
-                    positions=support_output.memory_positions,
-                ),
-                position_offset=decoder.segment_length,
+                initial_memory=memory,
+                position_offset=batch[0].query_position_offset,
                 update_memory=False,
             )
         loss = next_token_cross_entropy(output.logits, target_ids)
@@ -376,26 +497,25 @@ def audit_cross_segment_gradients(
     decoder.zero_grad(set_to_none=True)
     handle = decoder.compressor.register_forward_hook(capture)
     try:
-        support_ids, support_valid = collate_memory_required_support(
+        memory = unroll_memory_required_prefix(
+            decoder,
             [example],
             pad_id=pad_id,
             device=device,
         )
-        support_output = decoder(support_ids, support_valid)
         output = decoder(
             input_ids,
             token_valid,
-            initial_memory=AttentionMemory(
-                values=support_output.memory,
-                valid=support_output.memory_valid,
-                positions=support_output.memory_positions,
-            ),
-            position_offset=decoder.segment_length,
+            initial_memory=memory,
+            position_offset=example.query_position_offset,
             update_memory=False,
             memory_intervention=hide_memory if condition == "drop" else None,
         )
-        if len(captured) != 2:
-            raise RuntimeError("gradient audit requires exactly two segments")
+        expected_segments = 2 + len(example.distractor_ids)
+        if len(captured) != expected_segments:
+            raise RuntimeError(
+                f"gradient audit requires exactly {expected_segments} segments"
+            )
         support_hidden, summary = captured[0]
         support_hidden.retain_grad()
         summary.retain_grad()

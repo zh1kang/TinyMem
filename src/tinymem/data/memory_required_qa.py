@@ -1,4 +1,4 @@
-"""Two-segment byte QA examples whose answers require external memory."""
+"""Segmented byte QA examples whose answers require external memory."""
 
 from __future__ import annotations
 
@@ -10,9 +10,17 @@ from tinymem.data.schema import ReasoningExample
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 
 
+DISTRACTOR_TEXTS = (
+    "A quiet melody played while rain touched the glass.\n",
+    "The old clock ticked steadily through the afternoon.\n",
+    "Someone folded a blue blanket beside a wooden chair.\n",
+    "Warm sunlight faded as clouds crossed the sky.\n",
+)
+
+
 @dataclass(frozen=True)
 class MemoryRequiredQAExample:
-    """Hold one support segment and one answer-supervised query segment."""
+    """Hold support, intervening distractors, and an answer-supervised query."""
 
     support_ids: tuple[int, ...]
     query_ids: tuple[int, ...]
@@ -20,6 +28,7 @@ class MemoryRequiredQAExample:
     segment_length: int
     source_example_id: str
     split: str
+    distractor_ids: tuple[tuple[int, ...], ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("support_ids", "query_ids", "answer_ids"):
@@ -42,12 +51,31 @@ class MemoryRequiredQAExample:
             raise ValueError("segment_length must be positive")
         if len(self.support_ids) > self.segment_length:
             raise ValueError("support_ids must fit inside one segment")
+        if not isinstance(self.distractor_ids, tuple):
+            raise TypeError("distractor_ids must be a tuple")
+        for distractor in self.distractor_ids:
+            if not isinstance(distractor, tuple) or not distractor:
+                raise ValueError("each distractor must be a nonempty tuple")
+            if len(distractor) > self.segment_length:
+                raise ValueError("each distractor must fit inside one segment")
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 0 <= value < ByteTokenizer.vocab_size
+                for value in distractor
+            ):
+                raise ValueError("distractors must contain valid byte-token IDs")
         if len(self.query_ids) + len(self.answer_ids) + 1 > self.segment_length:
             raise ValueError("query and answer must fit inside one segment")
         for name in ("source_example_id", "split"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"{name} must be a nonempty string")
+
+    @property
+    def query_position_offset(self) -> int:
+        """Return the absolute start position after all preceding segments."""
+        return (1 + len(self.distractor_ids)) * self.segment_length
 
 
 def supporting_fact_text(example: ReasoningExample) -> str:
@@ -73,8 +101,9 @@ def build_memory_required_qa_examples(
     tokenizer: ByteTokenizer,
     *,
     segment_length: int,
+    distractor_segments: int = 0,
 ) -> list[MemoryRequiredQAExample]:
-    """Keep only qa1 evidence and place each query in the next segment."""
+    """Place qa1 evidence, neutral distractors, and the query in separate segments."""
     if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
         raise TypeError("examples must be a sequence")
     if not examples or not all(
@@ -87,8 +116,15 @@ def build_memory_required_qa_examples(
         raise TypeError("segment_length must be an integer")
     if segment_length <= 0:
         raise ValueError("segment_length must be positive")
+    if isinstance(distractor_segments, bool) or not isinstance(
+        distractor_segments,
+        Integral,
+    ):
+        raise TypeError("distractor_segments must be an integer")
+    if distractor_segments < 0:
+        raise ValueError("distractor_segments must be nonnegative")
     encoded = []
-    for example in examples:
+    for example_index, example in enumerate(examples):
         support_text = f"Fact: {supporting_fact_text(example)}\n"
         support_ids = tuple(tokenizer.encode(support_text))
         if len(support_ids) > segment_length:
@@ -99,6 +135,18 @@ def build_memory_required_qa_examples(
         answer_ids = tuple(tokenizer.encode(example.answer))
         if len(query_ids) + len(answer_ids) + 1 > segment_length:
             raise ValueError("question and answer do not fit inside one segment")
+        distractor_ids = tuple(
+            tuple(
+                tokenizer.encode(
+                    DISTRACTOR_TEXTS[
+                        (example_index + distractor_index) % len(DISTRACTOR_TEXTS)
+                    ]
+                )
+            )
+            for distractor_index in range(int(distractor_segments))
+        )
+        if any(len(distractor) > segment_length for distractor in distractor_ids):
+            raise ValueError("distractor text does not fit inside one segment")
         encoded.append(
             MemoryRequiredQAExample(
                 support_ids=support_ids,
@@ -107,6 +155,7 @@ def build_memory_required_qa_examples(
                 segment_length=int(segment_length),
                 source_example_id=example.source_example_id,
                 split=example.split,
+                distractor_ids=distractor_ids,
             )
         )
     return encoded

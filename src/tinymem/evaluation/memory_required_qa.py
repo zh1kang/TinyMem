@@ -1,4 +1,4 @@
-"""Causal interventions for two-segment byte memory experiments."""
+"""Causal interventions for segmented byte memory experiments."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 from tinymem.training.memory_required_qa import (
     MEMORY_REQUIRED_MODES,
     attention_memory_from_values,
-    collate_memory_required_support,
+    unroll_memory_required_prefix,
 )
 
 
@@ -92,18 +92,15 @@ def _learned_memories(
     positions = []
     for start in range(0, len(examples), batch_size):
         batch = examples[start : start + batch_size]
-        support_ids, support_valid = collate_memory_required_support(
+        memory = unroll_memory_required_prefix(
+            decoder,
             batch,
             pad_id=ByteTokenizer.special_tokens["<pad>"],
             device=device,
         )
-        output = decoder(
-            support_ids,
-            support_valid,
-        )
-        values.append(output.memory)
-        valid.append(output.memory_valid)
-        positions.append(output.memory_positions)
+        values.append(memory.values)
+        valid.append(memory.valid)
+        positions.append(memory.positions)
     return AttentionMemory(
         values=torch.cat(values),
         valid=torch.cat(valid),
@@ -175,7 +172,7 @@ def _score_and_generate(
         input_ids,
         torch.ones_like(input_ids, dtype=torch.bool),
         initial_memory=memory,
-        position_offset=example.segment_length,
+        position_offset=example.query_position_offset,
         update_memory=False,
     )
     answer_start = len(example.query_ids)
@@ -202,7 +199,7 @@ def _score_and_generate(
             current,
             torch.ones_like(current, dtype=torch.bool),
             initial_memory=memory,
-            position_offset=example.segment_length,
+            position_offset=example.query_position_offset,
             update_memory=False,
         )
         next_id = int(generated_output.logits[0, -1].argmax())
@@ -266,9 +263,16 @@ def evaluate_memory_required_qa(
                 or oracle_values.shape != expected_shape
             ):
                 raise ValueError(f"oracle_values must have shape {expected_shape}")
-            memory = attention_memory_from_values(
+            oracle_memory = attention_memory_from_values(
                 oracle_values.to(device=device),
                 segment_length=decoder.segment_length,
+            )
+            memory = unroll_memory_required_prefix(
+                decoder,
+                examples,
+                pad_id=ByteTokenizer.special_tokens["<pad>"],
+                device=device,
+                initial_memory=oracle_memory,
             )
             conditions = ("normal", "drop", "zero", "shuffle")
         else:
