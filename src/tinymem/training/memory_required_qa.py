@@ -197,10 +197,13 @@ def unroll_memory_required_prefix(
     pad_id: int,
     device: torch.device | str,
     initial_memory: AttentionMemory | None = None,
+    write_distractors: bool = True,
 ) -> AttentionMemory:
     """Write support and each distractor while preserving the autograd graph."""
     if not isinstance(decoder, SegmentedContinuousDecoder):
         raise TypeError("decoder must be a SegmentedContinuousDecoder")
+    if not isinstance(write_distractors, bool):
+        raise TypeError("write_distractors must be a boolean")
     if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
         raise TypeError("examples must be a sequence")
     if not examples or not all(
@@ -211,11 +214,6 @@ def unroll_memory_required_prefix(
     if len(distractor_counts) != 1:
         raise ValueError("all examples in a batch must have equal distractor counts")
     distractor_count = next(iter(distractor_counts))
-    required_capacity = 1 + distractor_count
-    if decoder.bank.capacity < required_capacity:
-        raise ValueError(
-            "memory capacity must retain support and every distractor summary"
-        )
 
     if initial_memory is None:
         support_ids, support_valid = collate_memory_required_support(
@@ -242,6 +240,7 @@ def unroll_memory_required_prefix(
                 distractor_valid,
                 initial_memory=memory,
                 position_offset=(distractor_index + 1) * decoder.segment_length,
+                update_memory=write_distractors,
             )
         )
     return memory
@@ -351,6 +350,7 @@ def train_memory_required_qa(
     device: torch.device | str,
     seed: int,
     oracle_values: torch.Tensor | None = None,
+    write_distractors: bool = True,
     on_step: StepCallback | None = None,
 ) -> MemoryRequiredQATrainingHistory:
     """Train either the reader with oracle slots or the complete memory path."""
@@ -389,6 +389,8 @@ def train_memory_required_qa(
             raise ValueError(f"oracle_values must have shape {expected_shape}")
     elif oracle_values is not None:
         raise ValueError("oracle_values are valid only in oracle mode")
+    if not isinstance(write_distractors, bool):
+        raise TypeError("write_distractors must be a boolean")
     if on_step is not None and not callable(on_step):
         raise TypeError("on_step must be callable or None")
 
@@ -420,6 +422,7 @@ def train_memory_required_qa(
                     values,
                     segment_length=decoder.segment_length,
                 ),
+                write_distractors=write_distractors,
             )
             output = decoder(
                 input_ids,
@@ -434,6 +437,7 @@ def train_memory_required_qa(
                 batch,
                 pad_id=pad_id,
                 device=device,
+                write_distractors=write_distractors,
             )
             output = decoder(
                 input_ids,
@@ -461,6 +465,7 @@ def audit_cross_segment_gradients(
     condition: str,
     pad_id: int,
     device: torch.device | str,
+    write_distractors: bool = True,
 ) -> CrossSegmentGradientAudit:
     """Measure whether answer loss reaches the support state and writer."""
     if not isinstance(decoder, SegmentedContinuousDecoder):
@@ -469,6 +474,8 @@ def audit_cross_segment_gradients(
         raise TypeError("example must be a MemoryRequiredQAExample")
     if condition not in ("normal", "drop"):
         raise ValueError("condition must be 'normal' or 'drop'")
+    if not isinstance(write_distractors, bool):
+        raise TypeError("write_distractors must be a boolean")
 
     captured: list[tuple[torch.Tensor, torch.Tensor]] = []
 
@@ -502,6 +509,7 @@ def audit_cross_segment_gradients(
             [example],
             pad_id=pad_id,
             device=device,
+            write_distractors=write_distractors,
         )
         output = decoder(
             input_ids,

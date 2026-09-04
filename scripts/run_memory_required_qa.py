@@ -17,7 +17,10 @@ matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 
 from tinymem.data.babi import load_babi_file
-from tinymem.data.memory_required_qa import build_memory_required_qa_examples
+from tinymem.data.memory_required_qa import (
+    DISTRACTOR_TEXT_BANKS,
+    build_memory_required_qa_examples,
+)
 from tinymem.data.sampling import select_reasoning_examples
 from tinymem.evaluation.memory_required_qa import (
     MemoryRequiredQAConditionResult,
@@ -46,6 +49,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-examples", type=int, default=1_000)
     parser.add_argument("--validation-examples", type=int, default=100)
     parser.add_argument("--distractor-segments", type=int, default=0)
+    parser.add_argument(
+        "--train-distractor-variant",
+        choices=tuple(DISTRACTOR_TEXT_BANKS),
+        default="trained",
+    )
+    parser.add_argument(
+        "--validation-distractor-variant",
+        choices=tuple(DISTRACTOR_TEXT_BANKS),
+        default="trained",
+    )
+    parser.add_argument("--memory-capacity", type=int)
+    parser.add_argument(
+        "--distractor-write-policy",
+        choices=("all", "none"),
+        default="all",
+    )
     parser.add_argument("--steps", type=int, default=2_000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -139,6 +158,8 @@ def main() -> None:
         raise ValueError("weight decay must be nonnegative")
     if args.distractor_segments < 0:
         raise ValueError("distractor_segments must be nonnegative")
+    if args.memory_capacity is not None and args.memory_capacity <= 0:
+        raise ValueError("memory_capacity must be positive")
     if args.seed < 0 or args.validation_seed < 0:
         raise ValueError("seeds must be nonnegative")
 
@@ -154,12 +175,17 @@ def main() -> None:
 
     decoder = loaded.decoder
     decoder.segment_length = args.segment_length
-    memory_capacity = 1 + args.distractor_segments
+    memory_capacity = (
+        args.memory_capacity
+        if args.memory_capacity is not None
+        else 1 + args.distractor_segments
+    )
     decoder.bank = RecurrentMemoryBank(
         capacity=memory_capacity,
         model_width=decoder.model.config.d_model,
     ).to(device)
     decoder.memory_position_mode = "virtual"
+    write_distractors = args.distractor_write_policy == "all"
     tokenizer = ByteTokenizer()
     babi_root = repository_root / "data/raw/tasks_1-20_v1-2/en-valid-10k"
     train_source = load_babi_file(
@@ -181,6 +207,7 @@ def main() -> None:
         tokenizer,
         segment_length=args.segment_length,
         distractor_segments=args.distractor_segments,
+        distractor_variant=args.train_distractor_variant,
     )
     validation_examples = build_memory_required_qa_examples(
         select_reasoning_examples(
@@ -191,6 +218,7 @@ def main() -> None:
         tokenizer,
         segment_length=args.segment_length,
         distractor_segments=args.distractor_segments,
+        distractor_variant=args.validation_distractor_variant,
     )
 
     oracle_train = None
@@ -214,6 +242,7 @@ def main() -> None:
         device=device,
         max_new_tokens=args.max_new_tokens,
         oracle_values=oracle_validation,
+        write_distractors=write_distractors,
     )
     gradient_before = None
     if args.mode == "learned":
@@ -224,6 +253,7 @@ def main() -> None:
                 condition=condition,
                 pad_id=tokenizer.special_tokens["<pad>"],
                 device=device,
+                write_distractors=write_distractors,
             ).to_dict()
             for condition in ("normal", "drop")
         }
@@ -266,6 +296,7 @@ def main() -> None:
         device=device,
         seed=args.seed,
         oracle_values=oracle_train,
+        write_distractors=write_distractors,
         on_step=report_progress,
     )
     training_seconds = time.perf_counter() - started
@@ -276,6 +307,7 @@ def main() -> None:
         device=device,
         max_new_tokens=args.max_new_tokens,
         oracle_values=oracle_validation,
+        write_distractors=write_distractors,
     )
     gradient_after = None
     if args.mode == "learned":
@@ -286,6 +318,7 @@ def main() -> None:
                 condition=condition,
                 pad_id=tokenizer.special_tokens["<pad>"],
                 device=device,
+                write_distractors=write_distractors,
             ).to_dict()
             for condition in ("normal", "drop")
         }
@@ -314,6 +347,9 @@ def main() -> None:
         / args.artifact_root
         / args.mode
         / f"distractors_{args.distractor_segments}"
+        / f"capacity_{memory_capacity}"
+        / f"writes_{args.distractor_write_policy}"
+        / f"validation_{args.validation_distractor_variant}"
         / f"seed_{args.seed}",
         experiment_config,
         git_commit=source_state.commit,
@@ -338,6 +374,9 @@ def main() -> None:
             "memory_update": "fifo",
             "answer_only_loss": True,
             "distractor_segments": args.distractor_segments,
+            "train_distractor_variant": args.train_distractor_variant,
+            "validation_distractor_variant": args.validation_distractor_variant,
+            "distractor_write_policy": args.distractor_write_policy,
         },
     )
     result_document = {
@@ -357,6 +396,9 @@ def main() -> None:
         "segment_length": args.segment_length,
         "memory_capacity": memory_capacity,
         "distractor_segments": args.distractor_segments,
+        "train_distractor_variant": args.train_distractor_variant,
+        "validation_distractor_variant": args.validation_distractor_variant,
+        "distractor_write_policy": args.distractor_write_policy,
         "memory_position_mode": "virtual",
         "train_examples": len(train_examples),
         "validation_examples": len(validation_examples),

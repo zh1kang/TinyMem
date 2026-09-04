@@ -10,12 +10,22 @@ from tinymem.data.schema import ReasoningExample
 from tinymem.tokenization.byte_tokenizer import ByteTokenizer
 
 
-DISTRACTOR_TEXTS = (
+TRAINED_DISTRACTOR_TEXTS = (
     "A quiet melody played while rain touched the glass.\n",
     "The old clock ticked steadily through the afternoon.\n",
     "Someone folded a blue blanket beside a wooden chair.\n",
     "Warm sunlight faded as clouds crossed the sky.\n",
 )
+HELDOUT_DISTRACTOR_TEXTS = (
+    "Silver leaves trembled whenever the evening wind rose.\n",
+    "A paper kite drifted beneath the pale morning clouds.\n",
+    "Soft music continued while candles burned on the table.\n",
+    "Several bright buttons were sewn onto a wool coat.\n",
+)
+DISTRACTOR_TEXT_BANKS = {
+    "trained": TRAINED_DISTRACTOR_TEXTS,
+    "heldout": HELDOUT_DISTRACTOR_TEXTS,
+}
 
 
 @dataclass(frozen=True)
@@ -29,6 +39,7 @@ class MemoryRequiredQAExample:
     source_example_id: str
     split: str
     distractor_ids: tuple[tuple[int, ...], ...] = ()
+    distractor_variant: str = "trained"
 
     def __post_init__(self) -> None:
         for name in ("support_ids", "query_ids", "answer_ids"):
@@ -71,6 +82,12 @@ class MemoryRequiredQAExample:
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"{name} must be a nonempty string")
+        if not isinstance(self.distractor_variant, str):
+            raise TypeError("distractor_variant must be a string")
+        if self.distractor_variant not in DISTRACTOR_TEXT_BANKS:
+            raise ValueError(
+                f"distractor_variant must be one of {tuple(DISTRACTOR_TEXT_BANKS)}"
+            )
 
     @property
     def query_position_offset(self) -> int:
@@ -102,6 +119,7 @@ def build_memory_required_qa_examples(
     *,
     segment_length: int,
     distractor_segments: int = 0,
+    distractor_variant: str = "trained",
 ) -> list[MemoryRequiredQAExample]:
     """Place qa1 evidence, neutral distractors, and the query in separate segments."""
     if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
@@ -123,6 +141,13 @@ def build_memory_required_qa_examples(
         raise TypeError("distractor_segments must be an integer")
     if distractor_segments < 0:
         raise ValueError("distractor_segments must be nonnegative")
+    if not isinstance(distractor_variant, str):
+        raise TypeError("distractor_variant must be a string")
+    if distractor_variant not in DISTRACTOR_TEXT_BANKS:
+        raise ValueError(
+            f"distractor_variant must be one of {tuple(DISTRACTOR_TEXT_BANKS)}"
+        )
+    distractor_texts = DISTRACTOR_TEXT_BANKS[distractor_variant]
     encoded = []
     for example_index, example in enumerate(examples):
         support_text = f"Fact: {supporting_fact_text(example)}\n"
@@ -138,8 +163,8 @@ def build_memory_required_qa_examples(
         distractor_ids = tuple(
             tuple(
                 tokenizer.encode(
-                    DISTRACTOR_TEXTS[
-                        (example_index + distractor_index) % len(DISTRACTOR_TEXTS)
+                    distractor_texts[
+                        (example_index + distractor_index) % len(distractor_texts)
                     ]
                 )
             )
@@ -156,6 +181,7 @@ def build_memory_required_qa_examples(
                 source_example_id=example.source_example_id,
                 split=example.split,
                 distractor_ids=distractor_ids,
+                distractor_variant=distractor_variant,
             )
         )
     return encoded

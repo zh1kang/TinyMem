@@ -86,6 +86,7 @@ def _learned_memories(
     *,
     device: torch.device | str,
     batch_size: int,
+    write_distractors: bool,
 ) -> AttentionMemory:
     values = []
     valid = []
@@ -97,6 +98,7 @@ def _learned_memories(
             batch,
             pad_id=ByteTokenizer.special_tokens["<pad>"],
             device=device,
+            write_distractors=write_distractors,
         )
         values.append(memory.values)
         valid.append(memory.valid)
@@ -153,6 +155,22 @@ def _select_condition(
             decoder,
             batch_size=memory.values.shape[0],
             device=device,
+        )
+    if condition.startswith("drop_slot_"):
+        slot_text = condition.removeprefix("drop_slot_")
+        if not slot_text.isdigit():
+            raise ValueError("slot ablation condition must end with an integer")
+        slot_index = int(slot_text)
+        if not 0 <= slot_index < memory.slot_count:
+            raise ValueError("slot ablation index is out of range")
+        valid = memory.valid.clone()
+        positions = memory.positions.clone()
+        valid[:, slot_index] = False
+        positions[:, slot_index] = -1
+        return AttentionMemory(
+            values=memory.values,
+            valid=valid,
+            positions=positions,
         )
     raise ValueError("unknown memory condition")
 
@@ -222,6 +240,7 @@ def evaluate_memory_required_qa(
     max_new_tokens: int,
     oracle_values: torch.Tensor | None = None,
     memory_batch_size: int = 128,
+    write_distractors: bool = True,
 ) -> dict[str, MemoryRequiredQAConditionResult]:
     """Evaluate correct, absent, zero, wrong, and unwritten memory states."""
     if not isinstance(decoder, SegmentedContinuousDecoder):
@@ -232,6 +251,8 @@ def evaluate_memory_required_qa(
         raise ValueError("examples must contain MemoryRequiredQAExample values")
     if mode not in MEMORY_REQUIRED_MODES:
         raise ValueError(f"mode must be one of {MEMORY_REQUIRED_MODES}")
+    if not isinstance(write_distractors, bool):
+        raise TypeError("write_distractors must be a boolean")
     for name, value in (
         ("max_new_tokens", max_new_tokens),
         ("memory_batch_size", memory_batch_size),
@@ -273,6 +294,7 @@ def evaluate_memory_required_qa(
                 pad_id=ByteTokenizer.special_tokens["<pad>"],
                 device=device,
                 initial_memory=oracle_memory,
+                write_distractors=write_distractors,
             )
             conditions = ("normal", "drop", "zero", "shuffle")
         else:
@@ -283,8 +305,15 @@ def evaluate_memory_required_qa(
                 examples,
                 device=device,
                 batch_size=int(memory_batch_size),
+                write_distractors=write_distractors,
             )
             conditions = ("normal", "drop", "zero", "shuffle", "no_writes")
+
+        if memory.slot_count > 1:
+            conditions = (
+                *conditions,
+                *(f"drop_slot_{index}" for index in range(memory.slot_count)),
+            )
 
         shuffle_indices = _mismatched_indices(examples, device=device)
         raw_results: dict[

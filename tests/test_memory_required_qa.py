@@ -20,7 +20,10 @@ from tinymem.training.memory_required_qa import (
 )
 
 
-def make_examples(distractor_segments: int = 0):
+def make_examples(
+    distractor_segments: int = 0,
+    distractor_variant: str = "trained",
+):
     source = parse_babi_lines(
         [
             "1 Mary moved to the kitchen.\n",
@@ -37,6 +40,7 @@ def make_examples(distractor_segments: int = 0):
         ByteTokenizer(),
         segment_length=64,
         distractor_segments=distractor_segments,
+        distractor_variant=distractor_variant,
     )
 
 
@@ -76,6 +80,18 @@ def test_memory_required_examples_place_distractors_before_query() -> None:
         assert len(example.distractor_ids) == 2
         assert all(len(distractor) <= 64 for distractor in example.distractor_ids)
         assert example.query_position_offset == 3 * 64
+
+
+def test_heldout_distractors_change_only_intervening_content() -> None:
+    trained = make_examples(distractor_segments=2, distractor_variant="trained")
+    heldout = make_examples(distractor_segments=2, distractor_variant="heldout")
+
+    for trained_example, heldout_example in zip(trained, heldout, strict=True):
+        assert trained_example.support_ids == heldout_example.support_ids
+        assert trained_example.query_ids == heldout_example.query_ids
+        assert trained_example.answer_ids == heldout_example.answer_ids
+        assert trained_example.distractor_ids != heldout_example.distractor_ids
+        assert heldout_example.distractor_variant == "heldout"
 
 
 def test_memory_required_collation_supervises_only_the_answer() -> None:
@@ -150,6 +166,45 @@ def test_distractors_unroll_into_separate_valid_memory_slots() -> None:
     assert distractor_ids.shape == distractor_valid.shape
     assert distractor_valid.sum(dim=1).tolist() == [
         len(example.distractor_ids[1]) for example in examples
+    ]
+
+
+def test_capacity_pressure_evicts_the_oldest_support_summary() -> None:
+    torch.manual_seed(19)
+    examples = make_examples(distractor_segments=2)
+    decoder = make_decoder(memory_capacity=2).eval()
+
+    memory = unroll_memory_required_prefix(
+        decoder,
+        examples,
+        pad_id=ByteTokenizer.special_tokens["<pad>"],
+        device="cpu",
+    )
+
+    assert memory.valid.all()
+    for row, example in enumerate(examples):
+        assert memory.positions[row].tolist() == [
+            64 + len(example.distractor_ids[0]) - 1,
+            128 + len(example.distractor_ids[1]) - 1,
+        ]
+
+
+def test_skipping_distractor_writes_preserves_one_support_slot() -> None:
+    torch.manual_seed(23)
+    examples = make_examples(distractor_segments=2)
+    decoder = make_decoder(memory_capacity=1).eval()
+
+    memory = unroll_memory_required_prefix(
+        decoder,
+        examples,
+        pad_id=ByteTokenizer.special_tokens["<pad>"],
+        device="cpu",
+        write_distractors=False,
+    )
+
+    assert memory.valid.all()
+    assert memory.positions[:, 0].tolist() == [
+        len(example.support_ids) - 1 for example in examples
     ]
 
 
@@ -237,13 +292,24 @@ def test_memory_required_evaluation_runs_all_causal_conditions() -> None:
         max_new_tokens=2,
     )
 
-    assert tuple(oracle) == ("normal", "drop", "zero", "shuffle")
+    assert tuple(oracle) == (
+        "normal",
+        "drop",
+        "zero",
+        "shuffle",
+        "drop_slot_0",
+        "drop_slot_1",
+        "drop_slot_2",
+    )
     assert tuple(learned) == (
         "normal",
         "drop",
         "zero",
         "shuffle",
         "no_writes",
+        "drop_slot_0",
+        "drop_slot_1",
+        "drop_slot_2",
     )
     assert oracle["normal"].count == learned["normal"].count == 2
     assert oracle["normal"].mean_first_byte_logit_linf_from_normal == 0
