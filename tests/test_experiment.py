@@ -7,8 +7,10 @@ import pytest
 
 from tinymem.model.config import ExperimentConfig
 from tinymem.utils.experiment import (
+    GitSourceState,
     create_run_directory,
     current_git_commit,
+    current_git_source_state,
     experiment_id,
 )
 
@@ -39,8 +41,18 @@ def test_experiment_id_rejects_empty_git_commit() -> None:
 
 def test_create_run_directory_is_unique_and_records_identity(tmp_path: Path) -> None:
     config = ExperimentConfig(seed=53)
+    source_state = GitSourceState(
+        commit="abc123",
+        dirty=True,
+        working_tree_sha256="f" * 64,
+    )
 
-    first = create_run_directory(tmp_path, config, git_commit="abc123")
+    first = create_run_directory(
+        tmp_path,
+        config,
+        git_commit="abc123",
+        source_state=source_state,
+    )
     second = create_run_directory(tmp_path, config, git_commit="abc123")
 
     assert first != second
@@ -50,8 +62,29 @@ def test_create_run_directory_is_unique_and_records_identity(tmp_path: Path) -> 
     metadata = json.loads((first / "run.json").read_text())
     assert metadata["experiment_id"] == experiment_id(config, "abc123")
     assert metadata["git_commit"] == "abc123"
+    assert metadata["source_state"] == source_state.to_dict()
     assert metadata["config"] == json.loads(json.dumps(config.to_dict()))
     assert "created_at" in metadata
+
+
+def test_create_run_directory_rejects_mismatched_source_state(
+    tmp_path: Path,
+) -> None:
+    source_state = GitSourceState(
+        commit="different",
+        dirty=False,
+        working_tree_sha256=None,
+    )
+
+    with pytest.raises(ValueError, match="must match"):
+        create_run_directory(
+            tmp_path,
+            ExperimentConfig(),
+            git_commit="abc123",
+            source_state=source_state,
+        )
+
+    assert not list(tmp_path.iterdir())
 
 
 def test_current_git_commit_reads_repository_revision(
@@ -81,3 +114,46 @@ def test_current_git_commit_wraps_git_failure(
 
     with pytest.raises(RuntimeError, match="could not determine"):
         current_git_commit(tmp_path)
+
+
+def test_current_git_source_state_fingerprints_dirty_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        (
+            SimpleNamespace(stdout="abc123\n"),
+            SimpleNamespace(stdout=b"diff content"),
+            SimpleNamespace(stdout=b"new.py\0"),
+        )
+    )
+    (tmp_path / "new.py").write_text("value = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: next(responses))
+
+    state = current_git_source_state(tmp_path)
+
+    assert state.commit == "abc123"
+    assert state.dirty
+    assert state.working_tree_sha256 is not None
+    assert len(state.working_tree_sha256) == 64
+
+
+def test_current_git_source_state_reports_clean_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        (
+            SimpleNamespace(stdout="abc123\n"),
+            SimpleNamespace(stdout=b""),
+            SimpleNamespace(stdout=b""),
+        )
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: next(responses))
+
+    assert current_git_source_state(tmp_path) == GitSourceState(
+        commit="abc123",
+        dirty=False,
+        working_tree_sha256=None,
+    )

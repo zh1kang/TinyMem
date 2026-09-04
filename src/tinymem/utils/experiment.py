@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import uuid
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from tinymem.model.config import ExperimentConfig
+
+
+@dataclass(frozen=True)
+class GitSourceState:
+    """Identify the commit and any uncommitted source-tree content."""
+
+    commit: str
+    dirty: bool
+    working_tree_sha256: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 def current_git_commit(repository_root: str | Path) -> str:
@@ -29,6 +43,62 @@ def current_git_commit(repository_root: str | Path) -> str:
     if not commit:
         raise RuntimeError("Git returned an empty commit identifier")
     return commit
+
+
+def current_git_source_state(repository_root: str | Path) -> GitSourceState:
+    """Return a reproducible fingerprint for the current Git source tree."""
+    root = Path(repository_root)
+    commit = current_git_commit(root)
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD", "--"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        ).stdout
+        untracked_output = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            "could not fingerprint the current Git source tree"
+        ) from error
+
+    untracked_paths = sorted(
+        path for path in untracked_output.split(b"\0") if path
+    )
+    if not diff and not untracked_paths:
+        return GitSourceState(
+            commit=commit,
+            dirty=False,
+            working_tree_sha256=None,
+        )
+
+    digest = hashlib.sha256()
+    digest.update(b"tracked-diff\0")
+    digest.update(diff)
+    for encoded_path in untracked_paths:
+        relative_path = os.fsdecode(encoded_path)
+        path = root / relative_path
+        digest.update(b"untracked\0")
+        digest.update(encoded_path)
+        digest.update(b"\0")
+        if path.is_symlink():
+            digest.update(b"symlink\0")
+            digest.update(os.fsencode(os.readlink(path)))
+        elif path.is_file():
+            digest.update(b"file\0")
+            digest.update(path.read_bytes())
+        else:
+            digest.update(b"other\0")
+    return GitSourceState(
+        commit=commit,
+        dirty=True,
+        working_tree_sha256=digest.hexdigest(),
+    )
 
 
 def experiment_id(config: ExperimentConfig, git_commit: str) -> str:
@@ -56,8 +126,15 @@ def create_run_directory(
     config: ExperimentConfig,
     *,
     git_commit: str,
+    source_state: GitSourceState | None = None,
 ) -> Path:
     """Create a unique run directory and record its immutable identity."""
+    if source_state is not None:
+        if not isinstance(source_state, GitSourceState):
+            raise TypeError("source_state must be a GitSourceState or None")
+        if source_state.commit != git_commit.strip():
+            raise ValueError("source_state commit must match git_commit")
+
     identity = experiment_id(config, git_commit)
     created_at = datetime.now(UTC)
     timestamp = created_at.strftime("%Y%m%dT%H%M%S.%fZ")
@@ -68,6 +145,9 @@ def create_run_directory(
     metadata = {
         "experiment_id": identity,
         "git_commit": git_commit.strip(),
+        "source_state": (
+            source_state.to_dict() if source_state is not None else None
+        ),
         "created_at": created_at.isoformat(),
         "config": config.to_dict(),
     }
