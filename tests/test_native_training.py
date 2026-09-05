@@ -77,3 +77,50 @@ def test_group_validation_prevents_mixed_histories_and_duplicate_queries(reader)
             native_history_answer_loss(reader, writer, [first, changed])
     with pytest.raises(ValueError, match="distinct"):
         native_history_answer_loss(reader, writer, [first, replace(second, after_ids=first.after_ids)])
+
+
+def test_explicit_unequal_chunks_preserve_write_boundaries_and_gradients(reader, monkeypatch):
+    writer = NativeRecurrentMemory(16, memory_width=4, slots=2, segment_length=3)
+    writes, states = [], []
+    original = writer.write
+
+    def observe(shared_reader, state, ids):
+        writes.append(ids.tolist())
+        updated = original(shared_reader, state, ids)
+        updated.values.retain_grad()
+        states.append(updated)
+        return updated
+
+    monkeypatch.setattr(writer, "write", observe)
+    native_history_answer_loss(reader, writer, queries(), history_chunks=((6,), (7, 8, 9))).backward()
+    assert writes == [[6], [7, 8, 9]]
+    assert states[0].values.grad.abs().sum() > 0
+    assert all(parameter.grad is None for parameter in reader.model.parameters())
+
+
+@pytest.mark.parametrize("chunks", [(), ((), (6, 7, 8, 9)), ((6, 7, 8), (9,)), ((6, 7), (9, 8)), ((6, 7),)])
+def test_invalid_explicit_chunks(reader, chunks):
+    writer = NativeRecurrentMemory(16, memory_width=4, slots=2, segment_length=2)
+    with pytest.raises(ValueError):
+        native_history_answer_loss(reader, writer, queries(), history_chunks=chunks)
+
+
+@pytest.mark.parametrize("token", [True, 6.0])
+def test_explicit_chunk_token_type(reader, token):
+    writer = NativeRecurrentMemory(16, memory_width=4, slots=2, segment_length=2)
+    with pytest.raises(TypeError):
+        native_history_answer_loss(reader, writer, queries(), history_chunks=((token, 7), (8, 9)))
+
+
+@pytest.mark.parametrize("token", [-1, 16])
+def test_later_invalid_chunk_is_rejected_before_state_creation(reader, monkeypatch, token):
+    writer = NativeRecurrentMemory(16, memory_width=4, slots=2, segment_length=2)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid history must fail before state creation or writes")
+
+    monkeypatch.setattr(writer.writer, "empty", forbidden)
+    monkeypatch.setattr(writer, "write", forbidden)
+    examples = [replace(case, history_ids=(6, 7, 8, token)) for case in queries()]
+    with pytest.raises(ValueError, match="out-of-vocabulary"):
+        native_history_answer_loss(reader, writer, examples, history_chunks=((6, 7), (8, token)))
