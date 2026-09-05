@@ -103,6 +103,12 @@ Nineteen tests exercise actual tiny random Qwen forwards, generation, and optimi
 
 The expanded focused regression passes **312 tests**. A read-only independent review found no confirmed core correctness bug; its conditional concern about event splitting was resolved by inspecting `encode_update_chunks`, which returns exactly one token tuple per input chunk and rejects overlength events rather than splitting them. The nonfinite-loss error path was tightened. High-level provenance, CLI, reporting, and Della execution remain unverified until their own milestones.
 
+## Development artifact boundary
+
+`research/update_protocol.py::load_development_data` verifies the design, old-study trust anchor, complete data-generator source set, required transitive input hashes, exclusion manifests, source membership, and exact train/development representative pairings. Cross-split checks use selection metadata; the loader never opens or hashes confirmation histories. The real verified build loads all 256 training and 32 development histories under an explicit filesystem guard forbidding `confirmation.json` access.
+
+`shared_reader_identity` resolves the frozen old reader qualification and adapter hashes without loading Qwen weights. `load_shared_reader` rechecks that identity and verifies the pinned full snapshot before production loading. This does not replace the new per-state development reader gate. Eleven artifact-boundary tests cover omitted hashes, changed sources/data, mismatched pairings, path escape, and adapter corruption; the expanded focused regression passes **323 tests**. Launch freezing, qualification persistence, checkpoint completeness, and confirmation authorization remain pending.
+
 ## Reproduction
 
 From the repository root, with existing source/exclusion artifacts staged:
