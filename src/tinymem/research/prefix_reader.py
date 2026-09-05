@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import torch
 from torch.nn import functional as F
 
@@ -63,6 +65,38 @@ def prefix_answer_loss(
     answer_prefix = reader.model.get_input_embeddings()(answer_ids[:-1]).unsqueeze(0)
     logits = _forward(reader, torch.cat((prompt, answer_prefix), dim=1), answer_ids.numel())
     return F.cross_entropy(logits[0].float(), answer_ids.long())
+
+
+def prefix_answer_losses(
+    reader: PretrainedReader,
+    examples: Sequence[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
+) -> torch.Tensor:
+    """Batch equal-shape reads without padding; return token-mean CE in input order."""
+    if not examples:
+        raise ValueError("at least one prefix-read example is required")
+    groups: dict[tuple[int, int], list[tuple[int, torch.Tensor, torch.Tensor]]] = {}
+    embedding = reader.model.get_input_embeddings()
+    for index, (before, memory, after, answer) in enumerate(examples):
+        _check_ids(reader, answer, "answer_ids")
+        if answer.numel() == 0:
+            raise ValueError("answer_ids must be nonempty")
+        prompt = _prompt_embeddings(reader, before, memory, after, continuation_positions=answer.numel() - 1)
+        inputs = torch.cat((prompt, embedding(answer[:-1]).unsqueeze(0)), dim=1)
+        groups.setdefault((inputs.shape[1], answer.numel()), []).append((index, inputs, answer.long()))
+    by_index = {}
+    # Padding changes full-size bf16 MPS results; preserve each serial input shape.
+    for (length, keep), group in groups.items():
+        embeddings = torch.cat([inputs for _, inputs, _ in group])
+        positions = torch.arange(length, device=embeddings.device).unsqueeze(0).expand(len(group), -1)
+        logits = reader.model(
+            inputs_embeds=embeddings, attention_mask=torch.ones_like(positions), position_ids=positions,
+            use_cache=False, logits_to_keep=keep,
+        ).logits.float()
+        targets = torch.stack([answer for _, _, answer in group])
+        losses = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), targets.flatten(), reduction="none").view(len(group), keep).mean(dim=1)
+        for row, (index, _, _) in enumerate(group):
+            by_index[index] = losses[row]
+    return torch.stack([by_index[index] for index in range(len(examples))])
 
 
 @torch.inference_mode()
