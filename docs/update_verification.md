@@ -43,3 +43,9 @@ Logs: `/tmp/tinymem-update-study/final-clean-suite.txt`, `final-identities.json`
 4. Independent verification of the user's supplied completed old confirmation/fit/oracle aggregates. Local artifact discovery still finds only the original partial confirmation baseline output, not the final cluster report. Preserve the supplied findings as user-reported and collect the completed artifacts; do not rerun by default.
 
 No jobs were submitted, full-size model training started, remote transfers performed, or changes pushed. To execute next, follow `docs/della_updates.md`: clean transfer, input check, training-only profile, explicit compute declaration, then qualification-gated execution. Scientific completion is separate from this implementation completion.
+
+## Goal audit and access blocker
+
+The independent completion audit rejected closing the broader goal: tooling and synthetic validation do not establish the requested empirical trade-off, and the completed old output is not yet locally verified. The goal therefore remains open despite all engineering milestones being checked off.
+
+A read-only connectivity attempt with `ssh -o BatchMode=yes -o ConnectTimeout=10 ck2867@della-gpu.princeton.edu` failed with `Permission denied (publickey,keyboard-interactive)`. This session currently has no authenticated cluster access to locate/collect the existing outputs or run the new study. No credentials or SSH configuration were changed. Restore an authorized cluster session or transfer the completed output/logs into the repository before empirical verification can continue.
