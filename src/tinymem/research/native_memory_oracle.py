@@ -4,6 +4,7 @@ from collections.abc import Sequence
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from tinymem.data.reader_gate import ReaderCase
 from tinymem.memory.recurrent_slots import LatentSlotState
@@ -55,3 +56,42 @@ class NativeMemoryOracle(nn.Module):
 
     def forward(self, index: int) -> torch.Tensor:
         return self.read_projection(self.state(index).values[0])
+
+
+class FixedProjectionMemoryOracle(nn.Module):
+    """Fit bounded history codes while keeping their initial read projection fixed."""
+
+    def __init__(self, codes: torch.Tensor, projection: torch.Tensor) -> None:
+        super().__init__()
+        if not isinstance(codes, torch.Tensor) or not isinstance(projection, torch.Tensor):
+            raise TypeError("codes and projection must be tensors")
+        if codes.ndim != 3 or min(codes.shape) <= 0 or not codes.is_floating_point():
+            raise ValueError("codes must have floating [histories, slots, width] shape")
+        if projection.ndim != 2 or min(projection.shape) <= 0 or projection.shape[1] != codes.shape[2]:
+            raise ValueError("projection must have [reader_width, code_width] shape")
+        if projection.dtype != codes.dtype or projection.device != codes.device:
+            raise ValueError("codes and projection must share floating dtype and device")
+        if not torch.isfinite(codes).all() or not torch.isfinite(projection).all():
+            raise ValueError("codes and projection must be finite")
+        if (codes.abs() > 1).any():
+            raise ValueError("initial codes must be within [-1, 1]")
+        self.codes = nn.Parameter(codes.detach().clone())
+        self.register_buffer("projection", projection.detach().clone())
+
+    def state(self, index: int) -> LatentSlotState:
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.codes):
+            raise ValueError("index must identify one oracle history")
+        # Own one history's storage without cutting its gradient path.
+        values = self.codes[index:index + 1].clone()
+        valid = torch.ones(values.shape[:2], device=values.device, dtype=torch.bool)
+        return LatentSlotState(values, valid)
+
+    def forward(self, index: int) -> torch.Tensor:
+        return F.linear(self.state(index).values[0], self.projection)
+
+    @torch.no_grad()
+    def project_codes_(self) -> None:
+        """Apply the declared box constraint after an optimizer step."""
+        if not torch.isfinite(self.codes).all():
+            raise ValueError("cannot project nonfinite codes")
+        self.codes.clamp_(-1, 1)
