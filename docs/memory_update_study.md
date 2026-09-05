@@ -1,6 +1,6 @@
 # Reliable memory updates: single-budget design
 
-Status: data construction, streaming tokenization, paired reliability metrics, training/evaluation, reader qualification, launch/provenance integration, and command-line runners are implemented and verified. Multi-seed aggregation/reporting and Della orchestration remain pending. No full-size update-study training or scientific accuracy result is reported here. The prior association study's newly supplied negative outcomes are recorded separately in [association confirmation results](association_confirmation_results.md), explicitly labeled user-reported until artifact verification.
+Status: data construction, streaming tokenization, paired reliability metrics, training/evaluation, reader qualification, launch/provenance integration, and command-line runners are implemented and verified. Count-aware multi-seed aggregation/reporting is also implemented and verified; Della orchestration remains pending. No full-size update-study training or scientific accuracy result is reported here. The prior association study's newly supplied negative outcomes are recorded separately in [association confirmation results](association_confirmation_results.md), explicitly labeled user-reported until artifact verification.
 
 ## Architecture and question
 
@@ -146,6 +146,24 @@ Each train command initializes independently; it never overwrites or retrains an
 Eight integration tests exercise the actual synthetic data builder through qualification, freeze, six tiny-Qwen training runs, final checkpoint loading, and new-confirmation baseline/control evaluation. A scripted perfect text reader is used **only** to exercise the synthetic gate-pass branch; actual random-Qwen gate failure is separately tested and blocks launch. Confirmation access is refused both with zero and five completed runs. Tests also cover mixed-launch checkpoint rejection, tampered/partial artifacts, explicit CLI split selection, a frozen PEFT adapter with live input gradients, and intermediate checkpoint persistence (the latter uses explicitly stubbed optimizer steps, not a learning claim). The ten-step profile test uses real tiny optimization.
 
 The focused regression now passes **331 tests**. Both new and old input-only preflights pass. The production CLI rejects synthetic datasets. No real reader qualification, update launch, full-size training, confirmation evaluation, or cluster submission was performed. Reporting still needs independent result/checkpoint validation and paired-count aggregation; Della orchestration is the next execution boundary.
+
+## Count-aware reports
+
+```bash
+.venv/bin/python -m scripts.report_memory_updates \
+  --launch artifacts/predictions/update_launch \
+  --split confirmation --output artifacts/predictions/update_report
+```
+
+Reporting loads no model weights. It requires all six completed training runs and all thirteen evaluations (six learned checkpoints, five compact references, two controls). It verifies completion files, launch/checkpoint identities, expected histories, reader labels, serialized state bytes, and authoritative rescoring of raw predictions. Altering a cached metric does not change the reported result; a discrepancy fails validation. Outputs are fresh `report.json` and `report.md`, explicitly labeled by evidence type and split.
+
+The estimator pools numerators and denominators across histories **within each seed**, then averages seed-specific ratios for a learned family. It never pools seeds as extra histories. Complete CC/CW/WC/WW counts remain per run. Seed values, sample SD, and range are separate from evaluation-history uncertainty.
+
+The default 10,000-draw paired percentile bootstrap resamples complete histories with one shared count matrix for every method, seed, event, and outcome. Intervals condition on the observed training seeds. Undefined denominator draws are counted; if any occur, the interval is withheld, not recomputed after discarding them. These are descriptive 95% intervals, not multiple-testing-adjusted significance tests. Reported contrasts are query-pool minus mean/FIFO and each learned method minus latest vocabulary/templates, with direction explicit for accuracy versus forgetting.
+
+Markdown surfaces initial competence, correction/staleness, each event's preservation/forgetting, seed variation, paired intervals, and per-seed correction denominators. JSON retains all 80 outcomes, six transition tables, intervals, counts, shared costs, and artifact identities. A strong preservation claim still requires before-state competence; a zero forgetting rate with no initially correct facts is undefined, not success.
+
+Fourteen new focused tests verify count pooling (`1/1 + 0/7 = 1/8`), fixed-seed means versus cross-seed pooling, scalar recomputation of bootstrap draws, pairing, undefined intervals, cluster/family validation, metric tampering, byte payloads, and mixed evaluation identities. The complete synthetic pipeline now produces all thirteen evaluation records and a report. Its durable engineering fixture is `artifacts/smoke/update_report_fixture_20260905_v2/test_six_actual_tiny_training_0/inputs/report/`; it uses one held-out synthetic world and is **not scientific evidence**. Its single-history intervals are degenerate and used only to test reporting. Independent mathematical review found no confirmed error. The focused regression passes **345 tests**. No full-size model experiment or new confirmation examples were run.
 
 ## Reproduction
 

@@ -94,9 +94,21 @@ def test_six_actual_tiny_training_runs_and_completion_boundary(world, monkeypatc
     assert len(heldout) == 1 and heldout[0].episode_id.endswith("confirmation:0000")
     result = experiment.evaluate(reader, data, identity, launch_dir, "query_pool", seed=1337, split="confirmation")
     assert result["histories"] == 1
-    for method in ("recent_native", "latest_vocabulary", "latest_template", "fingerprint", "no_memory", "full_context"):
+    for run in launch["runs"][1:]:
+        experiment.evaluate(reader, data, identity, launch_dir, run["method"], seed=run["seed"], split="confirmation")
+    for method in ("recent_native", "recent_vocabulary", "latest_vocabulary", "latest_template", "fingerprint", "no_memory", "full_context"):
         result = experiment.evaluate(reader, data, identity, launch_dir, method, split="confirmation")
         assert result["histories"] == 1
+    from tinymem.evaluation import update_report
+    monkeypatch.setattr(update_report, "load_development_data", lambda path: data)
+    report = update_report.report_updates(launch_dir, root / "report", split="confirmation", resamples=20)
+    assert report["evidence_kind"] == "synthetic_fixture"
+    assert len(report["aggregate"]["runs"]) == 13
+    text = (root / "report/report.md").read_text()
+    assert "Synthetic fixtures" in text and "Paired history interval" in text
+    assert "Per-seed correction denominators" in text and "0/0" in text
+    assert "Seed SD" in text
+    assert all(gate["interpretation"] == "competence_limited" for gate in report["development_gates"].values())
     # A valid completed checkpoint cannot be adopted by another launch.
     second = root / "second-launch"
     experiment.freeze_launch(reader, data, identity, qualification, second, steps=2)
