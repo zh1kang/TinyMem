@@ -1,10 +1,12 @@
-"""History-only timing and update labels for controlled association questions."""
+"""Timing, update, and answer-pattern diagnostics for controlled associations."""
 
-from collections.abc import Sequence
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from tinymem.data.reader_gate import ReaderCase
 from tinymem.data.symbolic_world import parse_qa1_movement, parse_qa1_question
+from tinymem.evaluation.longmemeval import normalized_answer
 
 
 @dataclass(frozen=True)
@@ -13,6 +15,45 @@ class AssociationHistoryLabel:
     last_mention_chunk: int | None
     movement_count: int
     location_changes: int
+
+
+@dataclass(frozen=True)
+class AssociationAnswerPattern:
+    queries: int
+    correct: int
+    distinct_predictions: int
+    distinct_answers: int
+    constant_answer_ceiling_correct: int
+
+
+def summarize_association_answers(
+    cases: Sequence[ReaderCase], predictions: Mapping[str, str],
+) -> AssociationAnswerPattern:
+    """Describe known-query answers for one world, not its causal mechanism.
+
+    The constant-answer ceiling uses reference labels in hindsight.
+    A score below this ceiling does not establish query blindness.
+    """
+    if not cases or any(not case.case_id for case in cases):
+        raise ValueError("cases must have nonempty identifiers")
+    identifiers = {case.case_id for case in cases}
+    if len(identifiers) != len(cases) or set(predictions) != identifiers:
+        raise ValueError("predictions must match unique case identifiers exactly")
+    if len({(case.history_id, case.context) for case in cases}) != 1:
+        raise ValueError("queries must belong to one shared history")
+    if len({case.question for case in cases}) != len(cases):
+        raise ValueError("questions must be distinct")
+    if any(case.category != "opaque_qa1_known" for case in cases):
+        raise ValueError("answer patterns require known-entity queries only")
+    answers = [normalized_answer(case.answer) for case in cases]
+    if any(answer in ("", "unknown") for answer in answers):
+        raise ValueError("known-entity references must be nonempty known answers")
+    values = [normalized_answer(predictions[case.case_id]) for case in cases]
+    counts = Counter(answers)
+    return AssociationAnswerPattern(
+        len(cases), sum(value == answer for value, answer in zip(values, answers, strict=True)),
+        len(set(values)), len(counts), max(counts.values()),
+    )
 
 
 def label_association_history(
