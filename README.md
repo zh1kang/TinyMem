@@ -21,7 +21,7 @@ old state + current history chunk → existing recurrent writer → bounded stat
 - Keep full recurrent gradients, history-level splits, query-blind writes, and one shared state for several questions.
 - Add another budget or change the architecture only when a specific diagnostic justifies it.
 
-See [the specification](PROJECT_SPEC.md), [active plan](docs/research_plan.md), and [handoff](docs/cursor_handoff.md). Older implemented models and their tests are historical references, not additional active research requirements.
+See [the specification](PROJECT_SPEC.md), [active plan](docs/research_plan.md), [paired-update data design](docs/memory_update_study.md), and [handoff](docs/cursor_handoff.md). Older implemented models and their tests are historical references, not additional active research requirements.
 
 ## Measured evidence—not the new study's results
 

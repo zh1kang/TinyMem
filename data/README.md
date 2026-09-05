@@ -8,6 +8,8 @@ Dataset contents are downloaded into `data/raw/` and are not committed.
 
 The active study uses controlled bAbI-derived fact updates. Split by underlying source/history group before producing paired additions, repetitions, corrections, or queries. Validate answers independently, and keep confirmation outside development. Fresh entity IDs do not make a reused source history independent.
 
+The implemented [paired-update data design](../docs/memory_update_study.md) has 256 training, 32 development, and 64 new confirmation worlds. Run `python -m scripts.prepare_memory_updates --output <fresh-directory>` after staging the existing source/exclusion artifacts. This builds data only; it does not train a model or inspect the old confirmation dataset.
+
 The existing opaque-study manifests and consumed-data exclusions remain unchanged. No reserved bAbI test or external answers may be used to develop the update study. Generated datasets and predictions stay outside Git.
 
 The table below records the historical installed data layers, not additional active research requirements.

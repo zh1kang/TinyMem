@@ -34,7 +34,7 @@ Good training with weak development motivates a generalization diagnosis. Poor t
 | Milestone | Deliverable | Status |
 |---|---|---|
 | Scope | Dependency audit, preserve existing work, focused docs and notes | Verified; see decision log |
-| Data | Paired event sequences, independent answer replay, source-disjoint manifests | Planned |
+| Data | Paired event sequences, independent answer replay, source-disjoint manifests | Verified; see [data design](memory_update_study.md) |
 | Metrics | Before/after accuracy, preservation, forgetting transitions, stale/absent errors | Planned |
 | Runners | Training, reader qualification, and evaluation using existing components | Planned |
 | Reporting | History-level pairing, seed variation, uncertainty, tables and figures | Planned |
