@@ -1,6 +1,6 @@
 # Reliable memory updates: single-budget design
 
-Status: data construction, streaming tokenization, and paired reliability metrics implemented and verified. New training/evaluation runners and multi-seed aggregation/reporting are still pending. No new model training or scientific accuracy result is reported here.
+Status: data construction, streaming tokenization, paired reliability metrics, and the core training/evaluation functions are implemented and verified. Launch/provenance integration, command-line runners, and multi-seed aggregation/reporting remain pending. No full-size update-study training or scientific accuracy result is reported here. The prior association study's newly supplied negative outcomes are recorded separately in [association confirmation results](association_confirmation_results.md), explicitly labeled user-reported until artifact verification.
 
 ## Architecture and question
 
@@ -88,6 +88,20 @@ For absent keys, `absent_error` counts every output other than normalized exact 
 Pool counts across histories **within each optimization seed**, keeping each metric/event/cohort key separate. Do not average nonempty per-history conditional rates or pool overlapping cohorts/branches. For example, forgetting counts `1/1` and `0/7` pool to `1/8`, not `1/2`. Conditional subsets are method-specific: paired histories do not make each method's initially correct facts identical. Interpret them alongside before competence, unconditional accuracy, and full transition counts. Seed variation and paired-history intervals remain the next aggregation boundary.
 
 The hand-counted test fixture has `CC=2, CW=2, WC=1, WW=2` on seven unchanged correction queries: before `4/7`, after `3/7`, joint preservation `2/7`, conditional forgetting `2/4`, and unconditional forgetting `2/7`. It is saved at `artifacts/smoke/memory_update_metrics_20260905/fixture.json`, explicitly labeled synthetic with **no model result**. The combined regression command now passes **293 tests**; this does not claim a green full working-tree suite.
+
+## Core runner verification
+
+`src/tinymem/research/update_runner.py` uses the existing writers and cache-free native reader. A training step writes the four common chunks once, then forks three independent events from the same before state. It minimizes the mean of four state losses, each the mean of ten token-mean answer cross-entropies including the end-of-turn token. This defines the objective, not an authorized training schedule: launch parameters and provenance still need to be frozen.
+
+Every neural write owns exactly 66 bytes of finite, bounded FP32 state plus bool validity. The optimizer owns exactly the writer and projection parameters; reader parameters remain frozen and gradient-free. All four earlier states remain attached to after-event losses. Evaluation projects a state once for its ten independent questions, uses no persistent read cache, and saves byte-counted state snapshots as measurement output, not as additional memory available to a stream.
+
+All five compact references and both controls use the same paired episodes. Dictionaries are derived from training write tokens only, never questions, labels, development, or confirmation. Fingerprint lookup is explicitly marked handcrafted, not a Qwen reader result. Full context is an unbounded capability control and no-memory owns zero history bytes.
+
+Competence gates require exactly the authoritative episode set and rescore all raw predictions against independently replayed gold. Cached metrics and caller-provided pass flags cannot grant qualification. Text qualification checks known and absent accuracy separately at all four stages; learned competence checks only before-state known and absent accuracy. Both use the declared 95% threshold.
+
+Nineteen tests exercise actual tiny random Qwen forwards, generation, and optimization for both learned writers, plus every compact reference/control. Shared-fork losses and parameter gradients match independent replay, with and without gradient checkpointing. An after-only loss reaches all four common writes and its chosen event, but not the other two events. Reader weights remain bit-identical after optimization. Repeated evaluations match, state ownership is checked, and malformed gate coverage fails. These are engineering checks, not model-quality evidence.
+
+The expanded focused regression passes **312 tests**. A read-only independent review found no confirmed core correctness bug; its conditional concern about event splitting was resolved by inspecting `encode_update_chunks`, which returns exactly one token tuple per input chunk and rejects overlength events rather than splitting them. The nonfinite-loss error path was tightened. High-level provenance, CLI, reporting, and Della execution remain unverified until their own milestones.
 
 ## Reproduction
 
