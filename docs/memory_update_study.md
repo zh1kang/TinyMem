@@ -1,6 +1,6 @@
 # Reliable memory updates: single-budget design
 
-Status: data construction and streaming tokenization implemented and verified. New training, evaluation, metrics, and reporting runners are still pending. No new model training or scientific accuracy result is reported here.
+Status: data construction, streaming tokenization, and paired reliability metrics implemented and verified. New training/evaluation runners and multi-seed aggregation/reporting are still pending. No new model training or scientific accuracy result is reported here.
 
 ## Architecture and question
 
@@ -53,6 +53,42 @@ A competent-preservation claim requires each learned seed to reach at least 95% 
 
 Report conditional forgetting with explicit denominators alongside unconditional accuracy and all correctness transitions. Stale correction answers, absent false answers, and known false abstentions are distinct. Use paired-history uncertainty and separate optimization-seed variability. The study is descriptive, not an omnibus superiority test with undisclosed multiple comparisons.
 
+## Paired measurement contract
+
+`src/tinymem/evaluation/memory_updates.py` scores one validated history and one fixed checkpoint. Pass exactly 40 `UpdatePrediction(case_id, prediction)` records: ten for the before state and ten for each branch. Records may arrive in any order; missing, duplicate, foreign-history, and wrong-stage IDs fail before scoring. Gold labels come from the independently replayed dataset, not prediction records.
+
+Use `score_update_episode(episode, records).to_dict()` for JSON. Each rate retains its integer numerator/denominator and a derived value. `0/0` becomes JSON `null`, not zero or NaN. The result's mappings are read-only, and serialization returns detached copies.
+
+State-level metrics keep overall, known, and absent accuracy separate. Their denominators are 10, 8/9, and 2/1 respectively. The before state is counted once; its reuse in event contrasts does not create extra observations.
+
+For each branch, the target has before/after accuracy. **Update accuracy** applies only to addition and correction; repetition is evaluated with target after-accuracy, not called a successful change. **Stale-answer rate** applies only to corrected targets and compares the output with the immediately superseded gold value. It is not restricted to targets answered correctly before. Unknown-before additions and unchanged repetitions have undefined stale rates, not measured zero rates.
+
+There are two paired known-fact cohorts:
+
+- `unchanged_known`: every previously known binding whose gold value did not change;
+- `untouched_known`: the same cohort excluding the event target. This removes the directly refreshed repetition target when measuring collateral effects.
+
+These cohorts are identical for addition and correction. They are overlapping views, not independent samples. Absent entities never enter known-fact preservation denominators.
+
+For either cohort, let `CC`, `CW`, `WC`, `WW` be counts of correct/correct, correct/wrong, wrong/correct, and wrong/wrong before/after answers, with total `n`:
+
+| Measurement | Formula |
+|---|---|
+| Before accuracy | `(CC + CW) / n` |
+| After accuracy | `(CC + WC) / n` |
+| Joint preservation | `CC / n` |
+| Conditional preservation | `CC / (CC + CW)` |
+| Conditional forgetting | `CW / (CC + CW)` |
+| Unconditional forgetting | `CW / n` |
+
+`WC` is recovery, not preservation. `WW` does not require the same wrong text twice. Net accuracy change is `(WC - CW) / n`, which is not the forgetting rate. These are observed answer transitions, not proof of irreversible information loss inside a latent state.
+
+For absent keys, `absent_error` counts every output other than normalized exact `unknown`. Its two disjoint components are `absent_false_answer` (one of the six exact normalized room names) and `absent_invalid_output` (everything else, including empty output). The former is **not a general semantic hallucination rate**: `the office` and multi-answer strings are invalid, not canonical room answers. Known false abstention counts exact `unknown` on known keys. Normalization reuses the existing lowercase alphanumeric scorer; free-form abstention aliases are not newly introduced.
+
+Pool counts across histories **within each optimization seed**, keeping each metric/event/cohort key separate. Do not average nonempty per-history conditional rates or pool overlapping cohorts/branches. For example, forgetting counts `1/1` and `0/7` pool to `1/8`, not `1/2`. Conditional subsets are method-specific: paired histories do not make each method's initially correct facts identical. Interpret them alongside before competence, unconditional accuracy, and full transition counts. Seed variation and paired-history intervals remain the next aggregation boundary.
+
+The hand-counted test fixture has `CC=2, CW=2, WC=1, WW=2` on seven unchanged correction queries: before `4/7`, after `3/7`, joint preservation `2/7`, conditional forgetting `2/4`, and unconditional forgetting `2/7`. It is saved at `artifacts/smoke/memory_update_metrics_20260905/fixture.json`, explicitly labeled synthetic with **no model result**. The combined regression command now passes **293 tests**; this does not claim a green full working-tree suite.
+
 ## Reproduction
 
 From the repository root, with existing source/exclusion artifacts staged:
@@ -77,7 +113,7 @@ Run focused data tests:
 ```bash
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -o addopts='' -q -p no:cacheprovider \
   tests/test_memory_updates.py tests/test_prepare_memory_updates.py tests/test_update_encoding.py \
-  tests/test_opaque_qa1.py tests/test_memory_prompt.py
+  tests/test_memory_update_metrics.py tests/test_opaque_qa1.py tests/test_memory_prompt.py
 ```
 
-Combined with the existing native-memory regression suites: **255 tests pass**. Independent review prompted the explicit trust anchor and conflict checks. The 24 frozen sources, six old checkpoints, original protocol, and unrelated decoder patch remain unchanged. Nothing was submitted to Della or pushed.
+The data milestone passed 255 tests with the existing native-memory suites; adding the paired metric tests brings the verified total to **293**. Independent data review prompted the explicit trust anchor and conflict checks. The 24 frozen sources, six old checkpoints, original protocol, and unrelated decoder patch remain unchanged. Nothing was submitted to Della or pushed.
