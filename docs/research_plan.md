@@ -23,9 +23,9 @@ Do not change the architecture while implementing the new measurement path. A la
 
 The six 1,000-update association runs are complete. Development means are 14.32% known / 17.71% absent for query pooling and 12.76% / 9.38% for mean/FIFO. The known-answer advantage changes sign across seeds. Full text scores 253/256 known and 32/32 absent on the qualified development format.
 
-The original confirmation execution was interrupted. No complete confirmation report, final training-fit result, or current-task fixed-readout oracle result was available at the start of this work. Preserve partial outputs without reading them for tuning.
+The user now reports completed negative confirmation, poor training fit, and failed fixed-projection oracle results. See [the exact aggregates and verification status](association_confirmation_results.md). These are user-reported until final artifacts are independently matched; the original interrupted output remains separate. Do not repeat completed runs or use confirmation to tune.
 
-Finish the frozen comparison through the existing `scripts.opaque` tools and [Della execution](della.md), without retraining its checkpoints. Then evaluate the predetermined final seed-1337 checkpoints on all 256 training worlds. Use the current-task code-only oracle to distinguish fitted readout feasibility from writer learning where needed. The first four training worlds, frozen projection/reader, 200 updates, and all nine queries are already declared.
+Collect and verify the existing output first. Preserved `scripts.opaque` diagnostics reuse the old final checkpoints if a stage is genuinely unfinished. The new study uses [its separate Della pipeline](della_updates.md), not the old `all` command.
 
 Good training with weak development motivates a generalization diagnosis. Poor training means generalization is not the only problem. Oracle success establishes accessible states for those fitted examples, not a useful writer. Oracle failure remains conditional on its initialization, interface, optimizer, constraints, and budget.
 
@@ -36,10 +36,10 @@ Good training with weak development motivates a generalization diagnosis. Poor t
 | Scope | Dependency audit, preserve existing work, focused docs and notes | Verified; see decision log |
 | Data | Paired event sequences, independent answer replay, source-disjoint manifests | Verified; see [data design](memory_update_study.md) |
 | Metrics | Before/after accuracy, preservation, forgetting transitions, stale/absent errors | Verified; see [measurement contract](memory_update_study.md#paired-measurement-contract) |
-| Runners | Training, reader qualification, and evaluation using existing components | Planned |
-| Reporting | History-level pairing, seed variation, uncertainty, tables and figures | Planned |
-| Execution | Della scripts, input preflight, small-model end-to-end checks | Planned |
-| Handoff | Independent review, final notes, verified local commits, explicit pending results | Planned |
+| Runners | Training, reader qualification, and evaluation using existing components | Verified; `c88db89` |
+| Reporting | Paired count intervals, seed variation, JSON and Markdown tables | Verified; `042b02a` |
+| Execution | Della scripts, input preflight, small-model end-to-end checks | Locally verified; `814c2ab`; actual CUDA pending |
+| Handoff | Independent reviews, final notes, local commits, explicit pending results | Verified; [1,779 committed-tree tests and final checks](update_verification.md) |
 
 ## Event comparison
 
@@ -61,8 +61,8 @@ First require immediate binding competence before making a preservation claim. I
 
 ## Bounded next decisions
 
-1. Complete the implementation and synthetic validation without waiting for full-size runs.
-2. Run the existing diagnosis and new study on Della with recorded, fresh outputs.
+1. Preserve the verified implementation and synthetic evidence; no full-size update result is implied.
+2. Collect the completed old outputs, then profile/qualify the new study on Della and explicitly freeze its compute schedule before training.
 3. Inspect actual results and choose at most one targeted follow-up if justified.
 4. Consider a small byte-budget curve only after a useful interface is established.
 

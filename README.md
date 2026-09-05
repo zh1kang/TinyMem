@@ -34,9 +34,9 @@ The completed opaque-association study has six training runs: two writers, three
 
 The paired known-answer gap changes sign across seeds. The qualified full-text reader scores 253/256 known and 32/32 absent answers on that development format. Text competence does not establish compressed-state competence.
 
-The existing confirmation run was interrupted. Its full report, final generated training-fit measurements, and current-task fixed-readout oracle remain pending in the evidence inspected at the start of the update study. Do not tune on partial confirmation outputs or retrain the six completed checkpoints.
+The user now reports completed confirmation: query-pool known mean 15.85%, mean/FIFO 14.42%, difference +1.43 points with a 99% interval of −0.29 to +3.13. Latest templates reached 74.41%, full history 97.36%; absent qualification failed. Training fit and the tested fixed-projection code oracle also failed. These aggregates are [preserved as user-reported pending artifact verification](docs/association_confirmation_results.md), not results of the new update study. Do not rerun or tune on the completed confirmation by default.
 
-The first new step is to establish immediate binding competence before interpreting later errors as forgetting. The training-fit and fixed-readout diagnostic tools already exist; their execution is separate from implementation validation.
+The paired-update data, metrics, qualified-run lifecycle, count-aware reports, and Della scripts are implemented. New full-size results remain pending. Establish immediate binding competence before interpreting later errors as forgetting; weak competence is reported explicitly rather than treated as preservation success.
 
 ## Setup and verification
 
@@ -50,7 +50,9 @@ uv pip install --python .venv/bin/python -e '.[dev,research]'
 
 The input preflight requires the locally staged, hash-bound study artifacts and pinned Qwen snapshot. It checks inputs without loading the model or inspecting confirmation answers.
 
-Full-size training and evaluation run through [the Della runbook](docs/della.md). Do not run Qwen on a login node. Scripts use explicit devices and fresh output directories, with no silent fallback or partial-result merging.
+The committed-code verification passes **1,779 tests** in an isolated checkout with required datasets staged; the unrelated working-tree decoder edit is excluded from that claim. New-study input-only check: `.venv/bin/python -m scripts.run_memory_updates --data artifacts/predictions/memory_update_data_20260905_v2 check`.
+
+New full-size training and evaluation use [the paired-update Della runbook](docs/della_updates.md); [the old runbook](docs/della.md) is retained for historical diagnostics. Do not run Qwen on a login node. Scripts use explicit devices and fresh output directories, with no silent fallback or partial-result merging.
 
 ## Evidence and boundaries
 

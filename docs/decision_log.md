@@ -1889,4 +1889,14 @@ The existing association pipeline and frozen sources are unchanged. Newly user-r
 
 Verification: **377 tests pass in 33.13 seconds**, combining10 new shell/transfer tests with update, old handoff/runtime, and native oracle-runner suites (`/tmp/tinymem-update-study/della-regression.txt`). Shell tests use a declared executable stub, verify six trainings precede13confirmation calls, failure stops, and invalid arguments execute nothing. `bash -n` passes for new and old wrappers. The prior synthetic Python pipeline exercises actual tiny training/checkpoint/report logic separately. Local transfer dry-run output is `/tmp/tinymem-update-study/transfer-dry-run.txt`.
 
-Obsidian note51 and `docs/della_updates.md` give exact stages, clean export, mandatory schedule declaration, resource caveats, partial-output policy, and result collection. No Slurm submission, remote execution, environment change, push, or scientific accuracy claim. Final project verification remains.
+Obsidian note51 and `docs/della_updates.md` give exact stages, clean export, mandatory schedule declaration, resource caveats, partial-output policy, and result collection. No Slurm submission, remote execution, environment change, push, or scientific accuracy claim. Final project verification remains. Della tooling committed as `814c2ab`.
+
+## 2026-09-05 - Final committed-tree verification and status reconciliation
+
+A fresh clone of committed code through `814c2ab` passes **1,779 tests in38.37seconds** after staging its required input artifacts and bAbI validation dataset. Initial attempts exposed missing staged inputs, not source failures; these were supplied without editing tests. The working checkout's377focused tests already pass; the unrelated decoder edit is deliberately excluded from the full-suite claim. Logs: `/tmp/tinymem-update-study/final-clean-suite.txt` and `final-clean-checkout.txt`.
+
+Final identity verification matches all24 frozen sources,15 portable sources, six historical final checkpoints, both study/data protocols, and the original unrelated decoder file/patch. Both old/new input-only preflights pass. No real confirmation histories were opened by these checks. `docs/update_verification.md` records commits, evidence, fixture limits, missing cluster evidence, and exact next steps.
+
+Reconciled README, specification, active plan, Cursor handoff, implementation guide, and Obsidian current notes with completed tooling and newly supplied old negative outcomes. Removed stale instructions to rerun completed association stages by default. Discovery still finds only the original partial baseline output locally; final reported cluster results remain explicitly user-reported until collected and verified. No full-size update schedule, reader qualification, or scientific results are claimed.
+
+All implementation components are present, locally tested, independently reviewed at their major boundaries, and committed in verified steps. No remote transfer, Slurm submission, full-size training, dataset/prediction commit, or push occurred. Actual scientific execution is the next user-controlled stage, not an implementation blocker.

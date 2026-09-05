@@ -56,9 +56,9 @@ Every Qwen-based method shares the qualified reader, visible inputs, query envel
 
 ## Competence and decision gates
 
-First preserve and finish the existing six-run association comparison without changing its frozen sources, data, seeds, or decision rule. Do not inspect confirmation outputs to guide development.
+Preserve the existing six-run association comparison without changing its frozen sources, data, seeds, or decision rule. The user now reports completed negative confirmation, training fit, and fixed-projection oracle results; collect and verify the matching artifacts before rerunning any stage. Do not inspect confirmation outputs to guide development.
 
-Next measure final generated training fit using the predetermined checkpoints. The existing fixed-readout diagnostic fits one code per training world with the reader and read projection fixed; it is privileged feasibility evidence, not a compressor.
+The preserved training-fit tooling uses predetermined final checkpoints. The fixed-readout diagnostic fits one code per training world with the reader and read projection fixed; it is privileged feasibility evidence, not a compressor. Its reported failure remains conditional on the tested interface and optimization, not a fundamental storage limit.
 
 Only interpret update-induced loss once immediate binding competence is demonstrated. If competence is weak, report that limitation and keep the update measurements descriptive. A failed bounded fit does not prove an information-theoretic capacity limit.
 

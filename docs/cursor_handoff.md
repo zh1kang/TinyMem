@@ -1,7 +1,7 @@
 # TinyMem research handoff
 
-handoff code: `20d1410`, local and not pushed.
-verification: 1,632 tests pass for the committed project plus the CUDA handoff; real-input preflight passes and all 24 frozen sources match.
+implementation through `814c2ab`, local and not pushed.
+verification: 1,779 tests pass in a clean committed checkout with required datasets staged; both input-only preflights pass and all 24 frozen sources match. The unrelated decoder edit is excluded.
 no remote job has been submitted and CUDA hardware execution remains unverified.
 
 ## current objective
@@ -10,7 +10,7 @@ how reliably can query-independent learned memory incorporate new or corrected f
 compare with compact explicit storage; a positive learned-memory result is not required.
 use `PROJECT_SPEC.md` and `docs/research_plan.md` for the focused implementation contract.
 one derived task at 66 bytes is not the final storage frontier or a general impossibility result.
-implement the paired event data, before/after metrics, runners, reports, and Della scripts using existing components first.
+paired event data, before/after metrics, runners, reports, and separate Della scripts are implemented and locally verified. See `docs/memory_update_study.md` and `docs/della_updates.md`.
 the old comparison and its diagnostics remain frozen prerequisites, not a license to tune on confirmation.
 
 ## decisions and evidence
@@ -52,20 +52,20 @@ the paired mean known-answer gap is only 1.56 points, with a 7.04-point standard
 these development numbers do not establish a stable learned-compression advantage.
 some runs repeatedly answer `kitchen` for different entities in the same world, and abstention is poor.
 
-the Mac confirmation evaluation was interrupted during baseline generation.
-no complete confirmation report or final training-fit result exists yet.
-partial output is preserved but excluded from the CUDA handoff.
-do not tune on the confirmation answers or combine partial Mac and CUDA results.
+the user now reports completed confirmation: query pool15.85% known versus mean/FIFO14.42%; +1.43points with99% interval−0.29 to+3.13. Latest templates74.41%, full history97.36%; absent qualification failed. Training fit and the tested fixed-projection oracle also failed. See `docs/association_confirmation_results.md` for counts and limits. These are user-reported until final artifacts are independently matched.
+preserve the earlier partial output separately; do not merge it, tune on confirmation, or repeat completed evaluation by default.
 
 ## the unresolved cause
 
 we do not yet know whether the writer fails to encode bindings, the recurrent updates lose them, the fixed read interface cannot use them, or the objective/optimization favors a low-information solution.
-we also have not measured final generated training accuracy, so calling this only a generalization failure would be premature.
+the newly supplied poor training accuracy rules out an explanation based solely on generalization. Fixed-code oracle failure is conditional on its interface, initialization, constraints, optimization, and budget—not proof that the information cannot fit.
 a low online CE is insufficient: it can improve through predictable output and stop tokens without correct entity-room answers.
 the current read matrix has rank eight; this rules out simple rank collapse, not poor use of its directions.
 simple label frequency and token-length weighting do not by themselves explain the observed kitchen-heavy outputs.
 
-## next diagnosis and decision rules
+## preserved diagnosis and decision rules
+
+The following was the frozen diagnostic order. The user reports it completed; collect artifacts before rerunning any stage. These rules are not instructions to repeat completed work.
 
 1. finish the unchanged confirmation comparison, including raw baselines, full-history, drop, zero, donor, short-name transfer, and counterfactual controls.
    use the declared paired-world statistical rules, not a selected best seed.
@@ -94,14 +94,14 @@ any architectural or budget change is a separately declared experiment; retain t
 ## instructions for cursor
 
 work in `/scratch/gpfs/JORDANAT/caleb/TinyMem`.
-read this file and `docs/della.md`, then inspect Git state and the listed scripts.
+read this file and `docs/della_updates.md`, then inspect Git state and the listed scripts. `docs/della.md` retains the historical association pipeline.
 the full hand-written decoder is not the current Qwen execution path.
 the transfer must contain committed code, the pinned Qwen snapshot, qualified adapter, study protocol, six completed runs, opaque data, and vocabulary.
 the Mac's unrelated `continuous_decoder.py` edit must not be silently restored, committed, or transferred into the production checkout.
 
-use `scripts/della.slurm` and the `scripts.opaque` modules, not the archived MPS-only runners under `artifacts/predictions`.
-first run package checks, the no-inference input preflight, and tests.
-submit only the smoke job, inspect its exit status, numerical checks, and logs, then submit the fixed pipeline.
+use `scripts/della_updates.slurm` for the new paired experiment. Existing `scripts.opaque` tools are only for genuinely unfinished old diagnostics; do not rerun their completed `all` pipeline.
+first run package checks, both no-inference input preflights, and focused tests.
+profile training-only updates, inspect resource/timing/gradient checks, then explicitly choose a fixed step count and sufficient walltime. Run new qualification→freeze→six trainings→thirteen evaluations→report. Qualification failure aborts. No full-size update launch or schedule has been frozen locally.
 never run full Qwen inference or training on the login node.
 do not invent a Slurm account or request a QOS; use the existing default account.
 do not change package versions silently if installation fails.
