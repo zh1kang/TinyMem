@@ -1,6 +1,6 @@
 # Reliable memory updates: single-budget design
 
-Status: data construction, streaming tokenization, paired reliability metrics, and the core training/evaluation functions are implemented and verified. Launch/provenance integration, command-line runners, and multi-seed aggregation/reporting remain pending. No full-size update-study training or scientific accuracy result is reported here. The prior association study's newly supplied negative outcomes are recorded separately in [association confirmation results](association_confirmation_results.md), explicitly labeled user-reported until artifact verification.
+Status: data construction, streaming tokenization, paired reliability metrics, training/evaluation, reader qualification, launch/provenance integration, and command-line runners are implemented and verified. Multi-seed aggregation/reporting and Della orchestration remain pending. No full-size update-study training or scientific accuracy result is reported here. The prior association study's newly supplied negative outcomes are recorded separately in [association confirmation results](association_confirmation_results.md), explicitly labeled user-reported until artifact verification.
 
 ## Architecture and question
 
@@ -108,6 +108,44 @@ The expanded focused regression passes **312 tests**. A read-only independent re
 `research/update_protocol.py::load_development_data` verifies the design, old-study trust anchor, complete data-generator source set, required transitive input hashes, exclusion manifests, source membership, and exact train/development representative pairings. Cross-split checks use selection metadata; the loader never opens or hashes confirmation histories. The real verified build loads all 256 training and 32 development histories under an explicit filesystem guard forbidding `confirmation.json` access.
 
 `shared_reader_identity` resolves the frozen old reader qualification and adapter hashes without loading Qwen weights. `load_shared_reader` rechecks that identity and verifies the pinned full snapshot before production loading. This does not replace the new per-state development reader gate. Eleven artifact-boundary tests cover omitted hashes, changed sources/data, mismatched pairings, path escape, and adapter corruption; the expanded focused regression passes **323 tests**. Launch freezing, qualification persistence, checkpoint completeness, and confirmation authorization remain pending.
+
+## Qualification, training, and evaluation commands
+
+`research/update_experiment.py` and `scripts/run_memory_updates.py` now implement the artifact lifecycle. Run from the repository root. Every output is fresh; interrupted directories remain evidence and cannot qualify as complete runs. There is deliberately no automatic resume or checkpoint selection. A `complete.json` seal is written last and binds exact required output hashes. Partial seals fail JSON/hash/coverage validation rather than permitting confirmation.
+
+```bash
+PY=.venv/bin/python
+DATA=artifacts/predictions/memory_update_data_20260905_v2
+# No weights or confirmation histories opened:
+$PY -m scripts.run_memory_updates --data "$DATA" check
+
+# GPU allocation only; choose fresh output directories:
+$PY -m scripts.run_memory_updates --data "$DATA" --device cuda profile \
+  --method query_pool --output artifacts/predictions/update_profile_query
+$PY -m scripts.run_memory_updates --data "$DATA" --device cuda qualify \
+  --output artifacts/predictions/update_reader_qualification
+
+# STEPS must be an explicit predeclared positive integer, informed by training-only
+# profiling. No full-size update launch or training schedule has been frozen here.
+$PY -m scripts.run_memory_updates --data "$DATA" --device cuda freeze \
+  --qualification artifacts/predictions/update_reader_qualification \
+  --output artifacts/predictions/update_launch --steps "$STEPS"
+$PY -m scripts.run_memory_updates --data "$DATA" --device cuda train \
+  --launch artifacts/predictions/update_launch --method query_pool --seed 1337
+# Repeat train for both methods and all three declared seeds.
+$PY -m scripts.run_memory_updates --data "$DATA" --device cuda evaluate \
+  --launch artifacts/predictions/update_launch --method query_pool --seed 1337 \
+  --split confirmation
+# References/controls omit --seed. --split is always explicit.
+```
+
+The ten-step profile uses training histories only, verifies all seven recurrent state gradients, records logical token counts/timing/allocation samples, and saves **no reusable checkpoint**. Profile completion is never training completion. New full-context qualification uses all new development states; failure is recorded and blocks freezing. A frozen launch binds source/runtime/reader/data identity, exact per-seed schedules, training encodings, and training-only dictionary before any of its six new runs begins. Shared model/dictionary costs are recorded separately from per-stream bytes.
+
+Each train command initializes independently; it never overwrites or retrains an old association checkpoint. AdamW uses learning rate 0.001, weight decay 0.01, clip norm 1.0, full recurrent gradients, and non-reentrant gradient checkpointing. Initial and every-100/final writer weights are saved, with optimizer state at checkpoints. Development is evaluated only from the final checkpoint; weak before-state competence is recorded, not hidden or treated as launch success. Confirmation authorization requires all six completed new runs, checks exact schedule coverage and checkpoint hashes, then opens the new confirmation histories. Reader/runtime identity is strict, including GPU model and numerical settings: use matching allocations; do not silently mix hardware or packages.
+
+Eight integration tests exercise the actual synthetic data builder through qualification, freeze, six tiny-Qwen training runs, final checkpoint loading, and new-confirmation baseline/control evaluation. A scripted perfect text reader is used **only** to exercise the synthetic gate-pass branch; actual random-Qwen gate failure is separately tested and blocks launch. Confirmation access is refused both with zero and five completed runs. Tests also cover mixed-launch checkpoint rejection, tampered/partial artifacts, explicit CLI split selection, a frozen PEFT adapter with live input gradients, and intermediate checkpoint persistence (the latter uses explicitly stubbed optimizer steps, not a learning claim). The ten-step profile test uses real tiny optimization.
+
+The focused regression now passes **331 tests**. Both new and old input-only preflights pass. The production CLI rejects synthetic datasets. No real reader qualification, update launch, full-size training, confirmation evaluation, or cluster submission was performed. Reporting still needs independent result/checkpoint validation and paired-count aggregation; Della orchestration is the next execution boundary.
 
 ## Reproduction
 
