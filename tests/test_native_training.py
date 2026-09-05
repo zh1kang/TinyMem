@@ -28,12 +28,13 @@ def queries():
 
 
 @pytest.mark.parametrize("device", ["cpu", "mps"])
-def test_multiquery_loss_matches_independent_query_gradients_and_writes_once(reader, device, monkeypatch):
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+def test_multiquery_loss_matches_independent_query_gradients_and_writes_once(reader, device, writer_kind, monkeypatch):
     if device == "mps" and not torch.backends.mps.is_available():
         pytest.skip("MPS is unavailable")
     reader.model.to(device)
     torch.manual_seed(37)
-    writer = NativeRecurrentMemory(16, memory_width=4, slots=2, segment_length=2).to(device)
+    writer = NativeRecurrentMemory(16, memory_width=4, slots=2, segment_length=2, writer_kind=writer_kind).to(device)
     expected_writer = deepcopy(writer)
     original = writer.write
     writes, states = [], []

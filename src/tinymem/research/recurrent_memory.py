@@ -1,8 +1,11 @@
 """Query-blind narrow recurrent state around the frozen native research reader."""
 
+from typing import Literal
+
 import torch
 from torch import nn
 
+from tinymem.memory.query_pool_slots import QueryPoolSlotWriter
 from tinymem.memory.recurrent_slots import LatentSlotState, RecurrentSlotWriter
 from tinymem.research.pretrained import PretrainedReader
 
@@ -12,11 +15,22 @@ class NativeRecurrentMemory(nn.Module):
 
     def __init__(
         self, reader_width: int, *, memory_width: int, slots: int, segment_length: int,
+        writer_kind: Literal["narrow", "query_pool"] = "narrow", aggregation_width: int | None = None,
     ) -> None:
         super().__init__()
         if isinstance(segment_length, bool) or not isinstance(segment_length, int) or segment_length <= 0:
             raise ValueError("segment_length must be a positive integer")
-        self.writer = RecurrentSlotWriter(reader_width, memory_width, slots)
+        self.writer: RecurrentSlotWriter | QueryPoolSlotWriter
+        if writer_kind == "narrow":
+            if aggregation_width is not None:
+                raise ValueError("aggregation_width is only supported by query_pool")
+            self.writer = RecurrentSlotWriter(reader_width, memory_width, slots)
+        elif writer_kind == "query_pool":
+            width = 64 if aggregation_width is None else aggregation_width
+            self.writer = QueryPoolSlotWriter(reader_width, memory_width, slots, hidden_width=width)
+        else:
+            raise ValueError("writer_kind must be narrow or query_pool")
+        self.writer_kind = writer_kind
         self.read_projection = nn.Linear(memory_width, reader_width, bias=False)
         self.segment_length = segment_length
 

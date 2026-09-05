@@ -19,12 +19,13 @@ def reader():
     return PretrainedReader(model, None)
 
 
-def memory():
-    return NativeRecurrentMemory(16, memory_width=4, slots=2, segment_length=4)
+def memory(writer_kind="narrow"):
+    return NativeRecurrentMemory(16, memory_width=4, slots=2, segment_length=4, writer_kind=writer_kind)
 
 
 @pytest.mark.parametrize("lora", [False, True])
-def test_future_answer_trains_earlier_native_memory_with_frozen_reader(reader, lora):
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+def test_future_answer_trains_earlier_native_memory_with_frozen_reader(reader, lora, writer_kind):
     if lora:
         pytest.importorskip("peft")
         from tinymem.research.reader_adaptation import attach_reader_lora
@@ -38,7 +39,7 @@ def test_future_answer_trains_earlier_native_memory_with_frozen_reader(reader, l
     reader.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     reader.model.train()
     frozen = deepcopy(reader.model.state_dict())
-    compressor = memory()
+    compressor = memory(writer_kind)
     before, after, answer = (torch.tensor(ids) for ids in ([3], [5, 7], [8, 2]))
     first = compressor.write(reader, compressor.writer.empty(1), torch.tensor([11, 12]))
     first.values.retain_grad()
@@ -60,8 +61,9 @@ def test_future_answer_trains_earlier_native_memory_with_frozen_reader(reader, l
     assert first.values.grad is None
 
 
-def test_writes_use_only_current_chunk_and_valid_memory_without_cache(reader, monkeypatch):
-    compressor = memory().eval()
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+def test_writes_use_only_current_chunk_and_valid_memory_without_cache(reader, writer_kind, monkeypatch):
+    compressor = memory(writer_kind).eval()
     calls = []
 
     def inspect(module, args, kwargs, output):
@@ -150,8 +152,9 @@ def test_native_writer_uses_the_active_lora_decoder_features(reader):
     assert not torch.allclose(state.values, changed.values)
 
 
-def test_queries_do_not_update_memory_and_reset_has_no_hidden_history(reader):
-    compressor = memory().eval()
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+def test_queries_do_not_update_memory_and_reset_has_no_hidden_history(reader, writer_kind):
+    compressor = memory(writer_kind).eval()
     with torch.no_grad():
         first = compressor.write(reader, compressor.writer.empty(1), torch.tensor([10, 11, 12, 13]))
         saved = first.values.clone()
@@ -167,8 +170,9 @@ def test_queries_do_not_update_memory_and_reset_has_no_hidden_history(reader):
     assert compressor.memory_vectors(compressor.writer.empty(1)).numel() == 0
 
 
-def test_native_memory_optimizes_answer_loss_without_updating_reader(reader):
-    compressor = memory()
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+def test_native_memory_optimizes_answer_loss_without_updating_reader(reader, writer_kind):
+    compressor = memory(writer_kind)
     optimizer = torch.optim.AdamW(compressor.parameters(), lr=0.01)
     history = torch.tensor([10, 11, 12, 13, 14, 15])
     before, after, answer = (torch.tensor(ids) for ids in ([3], [5, 7], [8, 2]))
@@ -215,13 +219,14 @@ def test_native_memory_rejects_wrong_inputs_and_trainable_reader(reader, monkeyp
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="requires MPS")
-def test_native_memory_backward_is_deterministic_on_mps_with_partial_slots(reader):
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+def test_native_memory_backward_is_deterministic_on_mps_with_partial_slots(reader, writer_kind):
     deterministic = torch.are_deterministic_algorithms_enabled()
     warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
     torch.use_deterministic_algorithms(True)
     try:
         reader.model.to("mps")
-        compressor = memory().to("mps")
+        compressor = memory(writer_kind).to("mps")
         values = torch.randn(1, 2, 4, device="mps", requires_grad=True)
         partial = LatentSlotState(values, torch.tensor([[False, True]], device="mps"))
         compressor.memory_vectors(partial).square().sum().backward()
