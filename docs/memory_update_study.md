@@ -1,6 +1,6 @@
 # Reliable memory updates: single-budget design
 
-Status: data construction, streaming tokenization, paired reliability metrics, training/evaluation, reader qualification, launch/provenance integration, and command-line runners are implemented and verified. Count-aware multi-seed aggregation/reporting is also implemented and verified; Della orchestration remains pending. No full-size update-study training or scientific accuracy result is reported here. The prior association study's newly supplied negative outcomes are recorded separately in [association confirmation results](association_confirmation_results.md), explicitly labeled user-reported until artifact verification.
+Status: data construction, streaming tokenization, paired reliability metrics, training/evaluation, reader qualification, launch/provenance integration, and command-line runners are implemented and verified. Count-aware multi-seed aggregation/reporting and Della orchestration are also implemented and locally verified. Actual cluster execution and full-size scientific results remain pending. No full-size update-study training or scientific accuracy result is reported here. The prior association study's newly supplied negative outcomes are recorded separately in [association confirmation results](association_confirmation_results.md), explicitly labeled user-reported until artifact verification.
 
 ## Architecture and question
 
@@ -164,6 +164,14 @@ The default 10,000-draw paired percentile bootstrap resamples complete histories
 Markdown surfaces initial competence, correction/staleness, each event's preservation/forgetting, seed variation, paired intervals, and per-seed correction denominators. JSON retains all 80 outcomes, six transition tables, intervals, counts, shared costs, and artifact identities. A strong preservation claim still requires before-state competence; a zero forgetting rate with no initially correct facts is undefined, not success.
 
 Fourteen new focused tests verify count pooling (`1/1 + 0/7 = 1/8`), fixed-seed means versus cross-seed pooling, scalar recomputation of bootstrap draws, pairing, undefined intervals, cluster/family validation, metric tampering, byte payloads, and mixed evaluation identities. The complete synthetic pipeline now produces all thirteen evaluation records and a report. Its durable engineering fixture is `artifacts/smoke/update_report_fixture_20260905_v2/test_six_actual_tiny_training_0/inputs/report/`; it uses one held-out synthetic world and is **not scientific evidence**. Its single-history intervals are degenerate and used only to test reporting. Independent mathematical review found no confirmed error. The focused regression passes **345 tests**. No full-size model experiment or new confirmation examples were run.
+
+## Della pipeline
+
+Use [the separate update runbook](della_updates.md), `scripts/della_updates.slurm`, and `scripts/della_updates.sh`. Transfer committed source, not the unrelated local decoder patch. `scripts/update_transfer_manifest.py` provides a NUL-delimited list of the new data and required provenance/model/checkpoint inputs; the older rsync filter alone does not include the new exclusion manifests. Local rsync dry-run passes.
+
+Profile first, choose an explicit fixed step count and walltime from training-only compute evidence, then run qualification → freeze → six new trainings → thirteen evaluations → report in one allocation. Reader qualification failure stops the pipeline. The historical six checkpoints and old diagnostic scripts remain untouched; the new pipeline does not rerun their completed confirmation. Collect the user-reported existing results before considering any old diagnostic rerun.
+
+Ten shell/transfer tests verify ordering, failure propagation, strict arguments, explicit confirmation flags, source transfer coverage, and preserved old checkpoint/oracle linkage. Combined relevant suites now pass **377 tests**, including the existing portable-runtime/oracle-runner checks. These are local engineering checks, not proof of available Della modules, compatible CUDA wheels, sufficient walltime, or actual GPU execution. No job has been submitted.
 
 ## Reproduction
 
