@@ -7,6 +7,7 @@ import torch
 
 from tinymem.data.symbolic_world import MOVEMENT_SEPARATORS, parse_qa1_movement, validate_fact_inputs
 from tinymem.memory.packed_tokens import PackedTokenRetention, PackedTokenState
+from tinymem.memory.vocabulary_tokens import VocabularyTokenRetention
 
 
 class SentenceTokenizer(Protocol):
@@ -28,6 +29,43 @@ def _movement_person(sentence: str) -> str:
     return parse_qa1_movement(sentence, 1)[0]
 
 
+def _encode_sentences(tokenizer: SentenceTokenizer, sentences: Sequence[str]) -> list[int]:
+    if not sentences:
+        return []
+    return tokenizer.encode("\n".join(sentences) + "\n\n", add_special_tokens=False)
+
+
+def append_latest_fact_sentence(
+    packing: PackedTokenRetention | VocabularyTokenRetention, tokenizer: SentenceTokenizer,
+    state: PackedTokenState, sentence: str,
+) -> PackedTokenState:
+    """Apply one raw-fact selection policy with either lossless storage format."""
+    _check_sentence(sentence)
+    ids, valid = packing.materialize(state, pad_id=0)
+    if ids.shape[0] != 1:
+        raise ValueError("sentence retention requires a single stream")
+    retained_ids = ids[0, valid[0]].tolist()
+    retained_text = tokenizer.decode(retained_ids, skip_special_tokens=False)
+    retained = [line for line in retained_text.splitlines() if line]
+    keys = [_movement_person(line) for line in retained]
+    if len(set(keys)) != len(keys):
+        raise ValueError("retained state must contain at most one fact per person")
+    if _encode_sentences(tokenizer, retained) != retained_ids:
+        raise ValueError("retained text must use the complete-sentence format")
+    if not any(separator in sentence for separator in MOVEMENT_SEPARATORS):
+        return state
+    person = _movement_person(sentence)
+    retained = [line for key, line in zip(keys, retained, strict=True) if key != person]
+    if packing.fits(_encode_sentences(tokenizer, [sentence])):
+        retained.append(sentence)
+    selected_ids = _encode_sentences(tokenizer, retained)
+    while not packing.fits(selected_ids):
+        retained.pop(0)
+        selected_ids = _encode_sentences(tokenizer, retained)
+    current = torch.tensor([selected_ids], dtype=torch.long, device=state.payload.device)
+    return packing.append(packing.empty(1, device=state.payload.device), current, torch.ones_like(current, dtype=torch.bool))
+
+
 class LatestFactTokenRetention(PackedTokenRetention):
     """Keep latest movement sentences, evicting the least recently updated person.
 
@@ -40,33 +78,4 @@ class LatestFactTokenRetention(PackedTokenRetention):
         self.tokenizer = tokenizer
 
     def append_sentence(self, state: PackedTokenState, sentence: str) -> PackedTokenState:
-        _check_sentence(sentence)
-        ids, valid = self.materialize(state, pad_id=0)
-        if ids.shape[0] != 1:
-            raise ValueError("sentence retention requires a single stream")
-        retained_ids = ids[0, valid[0]].tolist()
-        retained_text = self.tokenizer.decode(retained_ids, skip_special_tokens=False)
-        retained = retained_text.splitlines()
-        retained = [line for line in retained if line]
-        keys = [_movement_person(line) for line in retained]
-        if len(set(keys)) != len(keys):
-            raise ValueError("retained state must contain at most one fact per person")
-        if self._encode_sentences(retained) != retained_ids:
-            raise ValueError("retained text must use the complete-sentence format")
-        if not any(separator in sentence for separator in MOVEMENT_SEPARATORS):
-            return state
-        person = _movement_person(sentence)
-        retained = [line for key, line in zip(keys, retained, strict=True) if key != person]
-        if len(self._encode_sentences([sentence])) <= self.capacity:
-            retained.append(sentence)
-        selected_ids = self._encode_sentences(retained)
-        while len(selected_ids) > self.capacity:
-            retained.pop(0)
-            selected_ids = self._encode_sentences(retained)
-        current = torch.tensor([selected_ids], dtype=torch.long, device=state.payload.device)
-        return super().append(self.empty(1, device=state.payload.device), current, torch.ones_like(current, dtype=torch.bool))
-
-    def _encode_sentences(self, sentences: Sequence[str]) -> list[int]:
-        if not sentences:
-            return []
-        return self.tokenizer.encode("\n".join(sentences) + "\n\n", add_special_tokens=False)
+        return append_latest_fact_sentence(self, self.tokenizer, state, sentence)

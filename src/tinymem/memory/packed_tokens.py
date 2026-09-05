@@ -1,5 +1,6 @@
 """Lossless fixed-width native-ID retention in a bounded byte tensor."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import torch
@@ -49,6 +50,11 @@ class PackedTokenRetention:
         return PackedTokenState(
             torch.zeros(batch_size, self.payload_bytes, dtype=torch.uint8, device=device),
         )
+
+    def fits(self, token_ids: Sequence[int]) -> bool:
+        if any(isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < self.vocab_size for value in token_ids):
+            raise ValueError("token IDs must be native integers in the vocabulary")
+        return len(token_ids) <= self.capacity
 
     def append(
         self, state: PackedTokenState, token_ids: torch.Tensor, valid: torch.Tensor,

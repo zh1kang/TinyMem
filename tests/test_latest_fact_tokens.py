@@ -1,7 +1,8 @@
 import pytest
 import torch
 
-from tinymem.memory.latest_fact_tokens import LatestFactTokenRetention
+from tinymem.memory.latest_fact_tokens import LatestFactTokenRetention, append_latest_fact_sentence
+from tinymem.memory.vocabulary_tokens import VocabularyTokenRetention
 
 
 class CharacterTokenizer:
@@ -102,3 +103,30 @@ def test_sentence_policy_matches_cpu_on_mps():
         mps = policy.append_sentence(mps, sentence)
     assert torch.equal(cpu.payload, mps.payload.cpu())
     assert text(policy, cpu) == text(policy, mps)
+
+
+def test_shared_latest_fact_policy_uses_variable_escape_cost_not_token_count():
+    tokenizer = CharacterTokenizer()
+    known = "Mary went to the kitchen.\nJohn moved to the bathroom.\n\n"
+    vocabulary = sorted(set(tokenizer.encode(known, add_special_tokens=False)))
+    packing = VocabularyTokenRetention(40, 128, vocabulary)
+    state = packing.empty(1, device="cpu")
+    for sentence in ("Mary went to the kitchen.", "John moved to the bathroom.", "Zed went to the garden."):
+        state = append_latest_fact_sentence(packing, tokenizer, state, sentence)
+    ids, valid = packing.materialize(state, pad_id=0)
+    selected = ids[0, valid[0]].tolist()
+    decoded = tokenizer.decode(selected, skip_special_tokens=False)
+    assert "Zed went to the garden." in decoded
+    assert packing.fits(selected) and state.nbytes == 40
+    assert any(value not in vocabulary for value in selected)
+    state = append_latest_fact_sentence(packing, tokenizer, state, "Zed moved to the " + "z" * 70 + ".")
+    ids, valid = packing.materialize(state, pad_id=0)
+    assert "Zed" not in tokenizer.decode(ids[0, valid[0]].tolist(), skip_special_tokens=False)
+
+
+def test_fixed_width_fit_check_matches_capacity_and_rejects_invalid_ids():
+    packing = LatestFactTokenRetention(4, 128, CharacterTokenizer())
+    assert packing.fits([1, 2, 3, 4]) and not packing.fits([1, 2, 3, 4, 5])
+    for invalid in ([True], [-1], [128], [1.0]):
+        with pytest.raises(ValueError, match="native integers"):
+            packing.fits(invalid)
