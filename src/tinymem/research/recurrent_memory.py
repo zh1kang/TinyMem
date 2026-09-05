@@ -5,6 +5,7 @@ from typing import Literal
 import torch
 from torch import nn
 
+from tinymem.memory.mean_pool_slots import MeanPoolSlotWriter
 from tinymem.memory.query_pool_slots import QueryPoolSlotWriter
 from tinymem.memory.recurrent_slots import LatentSlotState, RecurrentSlotWriter
 from tinymem.research.pretrained import PretrainedReader
@@ -15,21 +16,24 @@ class NativeRecurrentMemory(nn.Module):
 
     def __init__(
         self, reader_width: int, *, memory_width: int, slots: int, segment_length: int,
-        writer_kind: Literal["narrow", "query_pool"] = "narrow", aggregation_width: int | None = None,
+        writer_kind: Literal["narrow", "query_pool", "mean_pool"] = "narrow", aggregation_width: int | None = None,
     ) -> None:
         super().__init__()
         if isinstance(segment_length, bool) or not isinstance(segment_length, int) or segment_length <= 0:
             raise ValueError("segment_length must be a positive integer")
-        self.writer: RecurrentSlotWriter | QueryPoolSlotWriter
+        self.writer: RecurrentSlotWriter | QueryPoolSlotWriter | MeanPoolSlotWriter
         if writer_kind == "narrow":
             if aggregation_width is not None:
-                raise ValueError("aggregation_width is only supported by query_pool")
+                raise ValueError("aggregation_width is only supported by query_pool and mean_pool")
             self.writer = RecurrentSlotWriter(reader_width, memory_width, slots)
         elif writer_kind == "query_pool":
             width = 64 if aggregation_width is None else aggregation_width
             self.writer = QueryPoolSlotWriter(reader_width, memory_width, slots, hidden_width=width)
+        elif writer_kind == "mean_pool":
+            width = 64 if aggregation_width is None else aggregation_width
+            self.writer = MeanPoolSlotWriter(reader_width, memory_width, slots, hidden_width=width)
         else:
-            raise ValueError("writer_kind must be narrow or query_pool")
+            raise ValueError("writer_kind must be narrow, query_pool, or mean_pool")
         self.writer_kind = writer_kind
         self.read_projection = nn.Linear(memory_width, reader_width, bias=False)
         self.segment_length = segment_length
@@ -59,7 +63,8 @@ class NativeRecurrentMemory(nn.Module):
             raise ValueError("input_ids must be a nonempty vector within segment_length")
         if input_ids.dtype not in (torch.int32, torch.int64):
             raise TypeError("input_ids must be int32 or int64")
-        if input_ids.device != reader.model.device or input_ids.device != self.writer.queries.device:
+        parameter = next(self.writer.parameters())
+        if input_ids.device != reader.model.device or input_ids.device != parameter.device:
             raise ValueError("input_ids, reader, and writer must share a device")
         if ((input_ids < 0) | (input_ids >= reader.model.config.vocab_size)).any():
             raise ValueError("input_ids contains an out-of-vocabulary token")
@@ -80,7 +85,7 @@ class NativeRecurrentMemory(nn.Module):
             inputs_embeds=inputs, attention_mask=torch.ones_like(positions),
             position_ids=positions, use_cache=False,
         )
-        hidden = output.last_hidden_state[:, memory.shape[0]:].to(self.writer.queries.dtype)
+        hidden = output.last_hidden_state[:, memory.shape[0]:].to(parameter.dtype)
         if not torch.isfinite(hidden).all():
             raise ValueError("history hidden states must be finite in the writer dtype")
         valid = torch.ones(1, input_ids.numel(), dtype=torch.bool, device=input_ids.device)

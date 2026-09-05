@@ -28,7 +28,7 @@ def queries():
 
 
 @pytest.mark.parametrize("device", ["cpu", "mps"])
-@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool", "mean_pool"])
 def test_multiquery_loss_matches_independent_query_gradients_and_writes_once(reader, device, writer_kind, monkeypatch):
     if device == "mps" and not torch.backends.mps.is_available():
         pytest.skip("MPS is unavailable")

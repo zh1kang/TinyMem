@@ -24,7 +24,7 @@ def memory(writer_kind="narrow"):
 
 
 @pytest.mark.parametrize("lora", [False, True])
-@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool", "mean_pool"])
 def test_future_answer_trains_earlier_native_memory_with_frozen_reader(reader, lora, writer_kind):
     if lora:
         pytest.importorskip("peft")
@@ -61,7 +61,7 @@ def test_future_answer_trains_earlier_native_memory_with_frozen_reader(reader, l
     assert first.values.grad is None
 
 
-@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool", "mean_pool"])
 def test_writes_use_only_current_chunk_and_valid_memory_without_cache(reader, writer_kind, monkeypatch):
     compressor = memory(writer_kind).eval()
     calls = []
@@ -83,9 +83,10 @@ def test_writes_use_only_current_chunk_and_valid_memory_without_cache(reader, wr
             state = compressor.write(reader, first, torch.tensor([13, 14, 15]))
     finally:
         hook.remove()
-    assert [call.shape for call in calls] == [(1, 2, 16), (1, 5, 16)]
+    valid_slots = 1 if writer_kind == "mean_pool" else 2
+    assert [call.shape for call in calls] == [(1, 2, 16), (1, valid_slots + 3, 16)]
     assert torch.equal(calls[0][0], reader.model.get_input_embeddings()(torch.tensor([11, 12])))
-    torch.testing.assert_close(calls[1][0, :2], compressor.memory_vectors(first))
+    torch.testing.assert_close(calls[1][0, :valid_slots], compressor.memory_vectors(first))
     assert torch.equal(first.values, old)
     assert initial.values.count_nonzero() == 0 and not initial.valid.any()
     assert state.values.grad_fn is None
@@ -127,6 +128,25 @@ def test_empty_bank_skips_useless_reader_graph_but_populated_bank_keeps_it(reade
     assert observed == [(False, False), (True, True)]
 
 
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+def test_mean_fifo_keeps_encoder_gradient_after_direct_slot_eviction(reader, device):
+    if device == "mps" and not torch.backends.mps.is_available():
+        pytest.skip("MPS is unavailable")
+    reader.model.to(device)
+    compressor = memory("mean_pool").to(device)
+    first = compressor.write(reader, compressor.writer.empty(1), torch.tensor([11, 12], device=device))
+    first.values.retain_grad()
+    second = compressor.write(reader, first, torch.tensor([13, 14], device=device))
+    third = compressor.write(reader, second, torch.tensor([15, 16], device=device))
+    torch.testing.assert_close(third.values[:, 0], second.values[:, -1])
+    before, after, answer = (torch.tensor(ids, device=device) for ids in ([3], [5, 7], [8, 2]))
+    prefix_answer_loss(reader, before, compressor.memory_vectors(third), after, answer).backward()
+    assert first.values.grad is not None and torch.isfinite(first.values.grad).all()
+    assert first.values.grad[:, -1].abs().sum() > 0
+    assert first.values.grad[:, 0].count_nonzero() == 0
+    assert all(parameter.grad is None for parameter in reader.model.parameters())
+
+
 def test_native_writer_uses_the_active_lora_decoder_features(reader):
     pytest.importorskip("peft")
     from tinymem.research.reader_adaptation import attach_reader_lora
@@ -152,7 +172,7 @@ def test_native_writer_uses_the_active_lora_decoder_features(reader):
     assert not torch.allclose(state.values, changed.values)
 
 
-@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool", "mean_pool"])
 def test_queries_do_not_update_memory_and_reset_has_no_hidden_history(reader, writer_kind):
     compressor = memory(writer_kind).eval()
     with torch.no_grad():
@@ -170,7 +190,7 @@ def test_queries_do_not_update_memory_and_reset_has_no_hidden_history(reader, wr
     assert compressor.memory_vectors(compressor.writer.empty(1)).numel() == 0
 
 
-@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool", "mean_pool"])
 def test_native_memory_optimizes_answer_loss_without_updating_reader(reader, writer_kind):
     compressor = memory(writer_kind)
     optimizer = torch.optim.AdamW(compressor.parameters(), lr=0.01)
@@ -219,7 +239,7 @@ def test_native_memory_rejects_wrong_inputs_and_trainable_reader(reader, monkeyp
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="requires MPS")
-@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool"])
+@pytest.mark.parametrize("writer_kind", ["narrow", "query_pool", "mean_pool"])
 def test_native_memory_backward_is_deterministic_on_mps_with_partial_slots(reader, writer_kind):
     deterministic = torch.are_deterministic_algorithms_enabled()
     warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
