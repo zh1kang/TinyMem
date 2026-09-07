@@ -50,7 +50,12 @@ it changes the frozen-reader contract and requires separate parameter accounting
 
 ## next deliverable
 
-choose one priority and then specify one bounded experiment with a matched control.
+the user approved the continuous-readout direction on 2026-09-07, requesting research and discussion with claude before coding.
+three consultation rounds and refreshed primary-source readings produced [the lean interface design](readout_interface_design.md).
+it uses a dedicated one-shot encoder, paired equally sized affine/GELU bridges, the existing 66-byte state, frozen Qwen, and files rather than a database.
+no full-size schedule is selected.
+
+next implement and test this bounded candidate, preserving the closed sources and artifacts.
 freeze initialization, seeds, objectives, total updates, final-only scoring, and success/stop rules before execution.
 audit remaining unconsumed source groups before promising a new confirmation set.
 no new implementation, model training, cluster submission, or selected accuracy target is implied by this research review.

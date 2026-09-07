@@ -1,5 +1,20 @@
 # Decision Log
 
+## 2026-09-07 - research and discuss the lean interface before coding
+
+the user approves the readout direction, requests consultation with claude before code, and asks to avoid unnecessary database complexity.
+three read-only consultation rounds and refreshed xRAG/simple-compression primary readings converge on [a small paired interface design](readout_interface_design.md).
+use a dedicated one-shot attention encoder, 66-byte FP32 state, matched 8-to-32-to-2048 affine/GELU bridges, and frozen Qwen.
+independently trained codes make this an end-to-end activation intervention, not fixed-code causal readout isolation.
+
+no database dependency or database use was found in the inspected source/scripts/manifest path.
+use existing JSON/JSONL/safetensors conventions and no new registry or persistent cache service.
+corrected review suggestions about linear-probe ceilings, per-question uncertainty, supposed quantization, and source leakage from ordinary answer-vocabulary overlap.
+input-only verification loads 256 training and 32 development histories with 2,048/512 and 256/64 known/absent questions respectively; no confirmation histories or model weights are read.
+
+Obsidian note 54 and the current plan record the candidate and implementation queue.
+no Python source, frozen source, model, checkpoint, training schedule, or unrelated decoder patch changed during this pre-code phase.
+
 ## 2026-09-07 - close the paired-update experiment and research the readout boundary
 
 the user closes the experiment and requests a deep review of next options.
