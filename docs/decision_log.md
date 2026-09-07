@@ -1,5 +1,32 @@
 # Decision Log
 
+## 2026-09-07 - close the paired-update experiment and research the readout boundary
+
+the user closes the experiment and requests a deep review of next options.
+[the closure](paired_update_closure.md) records the completed six-run/thirteen-evaluation negative result, poor training fit, failed bounded code fitting, and separate evidence provenance.
+the main report and v3 output artifact checks were completed in earlier local reviews; the latest source audit is user-supplied, not a newly imported local source audit.
+retain the formal v3 decision `inconclusive_full_text_control_failed` and do not tune or extend its schedule.
+
+[the research review](readout_options_2026-09-07.md) traces the real writer/read path and compares primary ICAE, xRAG, COCOM, simple pooling, information-preservation, and associative-memory evidence.
+the eight-to-2048 linear projection restricts each slot to an at-most-eight-dimensional input subspace; this is not a proof of information-capacity failure.
+artifact-only tensor calculations find final projected mean norms about 2.46-2.88 and no numerical rank collapse in the fixed projection.
+external high-norm results motivate caution about geometry, not an automatic scaling fix.
+
+recommend one bounded nonlinear-decompressor comparison if continuous-memory research remains the priority, or learned extraction into explicit records if reliable system behavior is the priority.
+reader adaptation is a separate alternative, not an automatically added component.
+no new architecture or training schedule is selected for execution.
+README, specification, current plan, design-status banner, and Obsidian current notes now distinguish closure from historical implementation-time pending statements.
+frozen execution sources and the unrelated decoder patch remain untouched.
+
+independent review identified that a four-history free-code linear projection can already represent eight arbitrary target vectors.
+the proposed nonlinear comparison now requires a one-shot query-blind encoder and held-out histories; a tiny free-code fit is only an optimization readiness check.
+the review's suggestion to filter by full-text correctness was not adopted: preserve all items and predeclare an inconclusive control-failure outcome.
+a full-text error does not prove that memory-conditioned correctness is impossible.
+
+validation in this documentation-only milestone: all 29 paired-launch source hashes match, the unrelated decoder SHA and patch remain unchanged, local Markdown links pass, and `git diff --check` passes.
+no model inference, training, or test suite was rerun.
+Obsidian note 53 and the index record closure, sources, alternatives, and limits.
+
 ## 2026-07-24 - Use three distinct data layers
 
 **Decision:** Use bAbI/BABILong as the primary controlled benchmark, WikiText-2 raw for ordinary language modeling, and cleaned LongMemEval as a held-out external evaluation.

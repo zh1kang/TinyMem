@@ -6,7 +6,15 @@ TinyMem studies **reliable updates to query-independent memory under a fixed per
 
 The broader motivation is the accuracy–storage trade-off of learned compression. A positive learned-memory result is not required: a reproducible explanation of where updating, preservation, or readout fails is a useful outcome.
 
-## Active scope
+## experiment status
+
+the 66-byte paired-update experiment is **closed with a competence-limited negative result**.
+all six 1,000-step runs and thirteen confirmation evaluations are complete.
+the writer-free readout diagnostic also failed to establish reliable recall; its formal result remains `inconclusive_full_text_control_failed`.
+see [experiment closure and verification scope](docs/paired_update_closure.md) and [the researched next options](docs/readout_options_2026-09-07.md).
+no follow-up architecture or training schedule is selected for execution.
+
+## closed experiment scope
 
 ```text
 old state + current history chunk → existing recurrent writer → bounded state
@@ -23,7 +31,7 @@ old state + current history chunk → existing recurrent writer → bounded stat
 
 See [the specification](PROJECT_SPEC.md), [active plan](docs/research_plan.md), [paired-update data design](docs/memory_update_study.md), and [handoff](docs/cursor_handoff.md). Older implemented models and their tests are historical references, not additional active research requirements.
 
-## Measured evidence—not the new study's results
+## historical association evidence
 
 The completed opaque-association study has six training runs: two writers, three seeds, 1,000 updates each, and 66-byte states. Development means on the same 32 worlds are:
 
@@ -34,9 +42,23 @@ The completed opaque-association study has six training runs: two writers, three
 
 The paired known-answer gap changes sign across seeds. The qualified full-text reader scores 253/256 known and 32/32 absent answers on that development format. Text competence does not establish compressed-state competence.
 
-The user now reports completed confirmation: query-pool known mean 15.85%, mean/FIFO 14.42%, difference +1.43 points with a 99% interval of −0.29 to +3.13. Latest templates reached 74.41%, full history 97.36%; absent qualification failed. Training fit and the tested fixed-projection code oracle also failed. These aggregates are [preserved as user-reported pending artifact verification](docs/association_confirmation_results.md), not results of the new update study. Do not rerun or tune on the completed confirmation by default.
+The user now reports completed confirmation: query-pool known mean 15.85%, mean/FIFO 14.42%, difference +1.43 points with a 99% interval of −0.29 to +3.13. Latest templates reached 74.41%, full history 97.36%; absent qualification failed. Training fit and the tested fixed-projection code oracle also failed. These aggregates were subsequently checked against downloaded artifacts; see [the closure evidence record](docs/paired_update_closure.md).
+The [original association note](docs/association_confirmation_results.md) records the earlier reporting status, not results of the paired-update study. Do not rerun or tune on the completed confirmation by default.
 
-The paired-update data, metrics, qualified-run lifecycle, count-aware reports, and Della scripts are implemented. New full-size results remain pending. Establish immediate binding competence before interpreting later errors as forgetting; weak competence is reported explicitly rather than treated as preservation success.
+## completed paired-update evidence
+
+| method | known accuracy | absent accuracy |
+|---|---:|---:|
+| query pooling, three-seed mean | 5.08% | 66.67% |
+| contextual mean/FIFO, three-seed mean | 6.32% | 58.85% |
+| latest template | 74.41% | 100% |
+| full context | 97.85% | 100% |
+
+all six before-state development gates failed.
+training fit was also poor, and writer-free code fitting did not establish reliable readout.
+these outcomes cannot isolate forgetting from already-competent memory.
+the data, metrics, lifecycle, reports, and scripts remain available for reproduction, not an automatic rerun.
+see [the complete closure](docs/paired_update_closure.md) for other references, correction outcomes, diagnostic counts, and provenance limits.
 
 ## Setup and verification
 

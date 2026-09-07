@@ -1,6 +1,12 @@
 # Reliable memory updates: single-budget design
 
-Status: data construction, streaming tokenization, paired reliability metrics, training/evaluation, reader qualification, launch/provenance integration, and command-line runners are implemented and verified. Count-aware multi-seed aggregation/reporting and Della orchestration are also implemented and locally verified. Actual cluster execution and full-size scientific results remain pending. No full-size update-study training or scientific accuracy result is reported here. The prior association study's newly supplied negative outcomes are recorded separately in [association confirmation results](association_confirmation_results.md), explicitly labeled user-reported until artifact verification.
+status updated 2026-09-07: **experiment closed, competence-limited negative result**.
+all six full-size runs and thirteen confirmation evaluations are complete.
+see [the closure record](paired_update_closure.md) for measured results and verification scope.
+
+this page preserves the implementation-time design and verification record below.
+statements such as "pending", "no job submitted", and "no full-size result" in those milestone sections describe their original verification dates, not current experiment status.
+commands remain reproduction instructions, not authorization to rerun the closed campaign.
 
 ## Architecture and question
 

@@ -1,6 +1,10 @@
 # TinyMem specification
 
-Updated 2026-09-05. This specification replaces the old milestone curriculum as the active project contract. The implemented historical code, checkpoints, and research evidence remain reproducible references; they are not a feature backlog.
+status updated 2026-09-07: the experiment specified below is closed with a competence-limited negative result.
+this document preserves its design contract; it does not authorize another run.
+see [closure](docs/paired_update_closure.md) and [follow-up research options](docs/readout_options_2026-09-07.md).
+no replacement architecture or schedule is frozen.
+implemented code, checkpoints, and evidence remain reproducible references, not a feature backlog.
 
 ## Research question
 
@@ -56,7 +60,9 @@ Every Qwen-based method shares the qualified reader, visible inputs, query envel
 
 ## Competence and decision gates
 
-Preserve the existing six-run association comparison without changing its frozen sources, data, seeds, or decision rule. The user now reports completed negative confirmation, training fit, and fixed-projection oracle results; collect and verify the matching artifacts before rerunning any stage. Do not inspect confirmation outputs to guide development.
+Preserve the existing six-run association comparison without changing its frozen sources, data, seeds, or decision rule. the negative association comparison and paired-update report were subsequently checked against downloaded artifacts.
+additional training-fit and source-audit reports have the separate provenance limits recorded in the closure.
+do not rerun completed stages or use their confirmation answers to tune a follow-up.
 
 The preserved training-fit tooling uses predetermined final checkpoints. The fixed-readout diagnostic fits one code per training world with the reader and read projection fixed; it is privileged feasibility evidence, not a compressor. Its reported failure remains conditional on the tested interface and optimization, not a fundamental storage limit.
 
