@@ -1,5 +1,20 @@
 # Decision Log
 
+## 2026-09-07 - verify the lean readout modules
+
+Implemented the one-shot history encoder and paired affine/GELU readout bridges in `src/tinymem/memory/readout_interface.py`.
+Added frozen-reader history extraction in `src/tinymem/research/readout_interface.py` without changing the frozen experiment sources.
+The state owns exactly 66 persistent bytes; both bridges have matched parameter counts and initialization.
+
+The 12 focused tests passed, including scalar attention/gradient references, tiny-model training, frozen-reader checks, and state serialization.
+The combined readout, prefix-reader, pooling, and update regression selection passed all 99 tests.
+Independent Claude review found no blocking defect.
+Serialization was checked with a fresh in-process reader copy, not a separate process.
+These checks establish implementation behavior, not factual recall with production Qwen weights.
+
+Next: implement the before-state training/evaluation path and reporting, then profile before selecting a fixed full-size schedule.
+No cluster launch or new confirmation use is authorized by this milestone.
+
 ## 2026-09-07 - research and discuss the lean interface before coding
 
 the user approves the readout direction, requests consultation with claude before code, and asks to avoid unnecessary database complexity.

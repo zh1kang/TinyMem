@@ -186,9 +186,23 @@ the lead corrected several suggestions instead of accepting them by agreement:
 - answer-vocabulary overlap is not source leakage;
 - deleting a tensor variable alone does not prove no read bypass.
 
+## verified module milestone
+
+implemented the one-shot encoder and paired readout bridges in `src/tinymem/memory/readout_interface.py`.
+`src/tinymem/research/readout_interface.py` extracts frozen reader features from history tokens only, then trains the encoder outside the reader's no-gradient scope.
+the state owns exactly 66 persistent bytes; both bridge conditions have matched parameter counts and matched initial tensors.
+
+`tests/test_readout_interface.py` passed all 12 tests, including explicit attention and gradient references, two-step training through a tiny frozen Qwen reader, state ownership, and serialized-state readback.
+the focused regression selection passed all 99 tests.
+a read-only independent Claude review found no blocking defect.
+
+the readback test uses a fresh in-process reader copy, not a separate process.
+production Qwen execution, the before-state runner, and full-size training are not yet verified.
+these are implementation checks, not measured evidence of factual recall or a compression advantage.
+
 ## implementation queue
 
-1. implement the small one-shot encoder and paired bridge module, with ownership, parameter-pairing, gradient, and query-blindness tests.
+1. verified: implement the small one-shot encoder and paired bridge module, with ownership, parameter-pairing, gradient, and query-blindness tests.
 2. add before-state-only training/evaluation using existing data/reader helpers, fresh-context reads, and the declared controls.
 3. add a small runner/report path and a Della script, reusing artifact and statistics conventions without a database or new framework.
 4. profile on training data, then explicitly select and freeze steps, optimizer schedule, seed list, walltime, and qualification rules before GPU training.
