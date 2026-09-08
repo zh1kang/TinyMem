@@ -1,5 +1,21 @@
 # Decision Log
 
+## 2026-09-08 - verify before-state training and controlled reads
+
+the new readout runner tokenizes only before histories and trains the encoder and bridge with the reader frozen in evaluation mode.
+inference accepts a detached 66-byte state and one question, without history tokens or gold answers.
+normal, zero-value, no-memory, and fixed whole-history shuffled controls are implemented.
+checkpoint loading checks the hash, identity, parameter keys, shapes, dtype, and finite values.
+a separate process reproduces reads from serialized state and bridge weights without an encoder or history.
+that process test does not yet exercise the joint checkpoint loader.
+
+the combined regression passed 129 tests in 27.90s.
+independent Claude review found no blocking findings and passed the 30 new tests.
+all runtime evidence uses tiny random Qwen on CPU, not production-model recall.
+full-text capability evaluation, run-level artifact binding, reports, and the Della script remain pending.
+the ten retained query graphs and three loss passes per evaluation query require profiling before full-size execution.
+no confirmation data or Della training was used.
+
 ## 2026-09-07 - verify the lean readout modules
 
 Implemented the one-shot history encoder and paired affine/GELU readout bridges in `src/tinymem/memory/readout_interface.py`.

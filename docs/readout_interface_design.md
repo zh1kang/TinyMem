@@ -197,13 +197,24 @@ the focused regression selection passed all 99 tests.
 a read-only independent Claude review found no blocking defect.
 
 the readback test uses a fresh in-process reader copy, not a separate process.
-production Qwen execution, the before-state runner, and full-size training are not yet verified.
+this original module milestone did not verify the before-state runner or production Qwen execution.
 these are implementation checks, not measured evidence of factual recall or a compression advantage.
+
+## verified runner milestone
+
+the before-state training path, detached single-question read interface, four state controls, and hash-checked checkpoints are implemented.
+the combined regression passed 129 tests in 27.90s.
+independent Claude review found no blocking findings.
+a separate process reproduces reads from saved state and bridge weights without an encoder or history.
+that process test does not exercise the joint checkpoint loader; its tensor round trip is tested in process.
+all runtime evidence uses tiny random Qwen on CPU, not production-model recall.
+full-text capability evaluation and outer run/report integration remain pending.
+profile the retained training graphs and three loss passes per evaluation query before full-size execution.
 
 ## implementation queue
 
 1. verified: implement the small one-shot encoder and paired bridge module, with ownership, parameter-pairing, gradient, and query-blindness tests.
-2. add before-state-only training/evaluation using existing data/reader helpers, fresh-context reads, and the declared controls.
+2. implemented and tested: before-state training, fresh-context state reads, and four state controls; full-text capability evaluation remains pending.
 3. add a small runner/report path and a Della script, reusing artifact and statistics conventions without a database or new framework.
 4. profile on training data, then explicitly select and freeze steps, optimizer schedule, seed list, walltime, and qualification rules before GPU training.
 
