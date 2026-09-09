@@ -12,7 +12,11 @@ local checks complete -> user runs Della profiles -> approve fixed schedule -> p
 
 ## local evidence
 
-- 242 tests passed in 42.29s with the command below.
+- 244 tests passed in 41.46s with the command below.
+- both arms pass an independent scalar tiny-reader answer-loss and gradient comparison in `tests/test_readout_interface.py`.
+- the reference uses cloned parameters, scalar attention/projections, exact erf GELU, native reader logits, and explicit first-answer/stop-token log probabilities.
+- all nine encoder/bridge parameter gradients match; reader gradients remain absent and reader weights stay unchanged.
+- in-memory mutation checks rejected an omitted stop token and halved gradients with unchanged loss for both arms.
 - the profile test also exercises a BF16 tiny reader on CPU with FP32 encoder/bridge/state.
 - the production `check` command verified 256 training and 32 development histories and the existing adapter, without loading model weights or confirmation histories.
 - a two-step affine/GELU smoke run, final checkpoint reload, controlled reads, disposable profile, and the report CLI completed at `artifacts/predictions/readout_local_handoff_20260908/`.
@@ -125,6 +129,12 @@ intervals use shared whole-history resamples across arms and seeds; seed variabi
 reports retain competence-limited results and label full-text qualification `rule_not_frozen`; they do not certify a later launch rule automatically.
 
 ## review disposition and limits
+
+the first goal audit rejected the earlier bridge-output reference because it did not compare tiny-reader answer loss and gradients.
+the new comparison closes that specific coverage gap without changing production sources or the sealed smoke artifacts.
+a focused read-only Claude review found no blocking defect and independently passed all 14 module tests, including the two new reference cases.
+the first bounded attempt at this focused review exhausted its turn limit before returning a report.
+all reference comparisons remain CPU-only.
 
 review found no local blocking defect in the profile, paired statistics, or CLI.
 the first bounded review attempt exhausted its turn limit; subsequent read-only review returned findings.

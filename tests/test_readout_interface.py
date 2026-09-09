@@ -117,6 +117,74 @@ def reader():
 
 
 @pytest.mark.parametrize("kind", ["affine", "gelu"])
+def test_scalar_reference_matches_tiny_reader_answer_loss_and_gradients(reader, kind):
+    torch.manual_seed(19)
+    encoder, bridge = OneShotEncoder(16), ReadoutBridge(16, kind)
+    parameters = {f"{owner}.{name}": value for owner, module in (("encoder", encoder), ("bridge", bridge))
+                  for name, value in module.named_parameters()}
+    reference = {name: value.detach().clone().requires_grad_() for name, value in parameters.items()}
+    frozen = deepcopy(reader.model.state_dict())
+    history, before = torch.tensor([3, 4, 3, 5]), torch.tensor([3])
+    # Unequal answer lengths distinguish mean-query CE from pooled-token CE.
+    queries = ((torch.tensor([4, 5]), torch.tensor([4, 2])),
+               (torch.tensor([3, 4, 5]), torch.tensor([3, 4, 2])))
+    memory = bridge(encode_readout_history(reader, encoder, history))
+    actual_losses = torch.stack([prefix_answer_loss(reader, before, memory, query, answer)
+                                 for query, answer in queries])
+
+    # The oracle calls no encoder, bridge, or prefix-loss implementation.
+    # Use native reader features, scalar attention/linear reductions, and exact GELU.
+    with torch.no_grad():
+        tokens = reader.model(input_ids=history.unsqueeze(0), use_cache=False,
+                              output_hidden_states=True).hidden_states[-1][0].float()
+
+    def linear(name, vector):
+        return torch.stack([sum(weight * vector) + bias for weight, bias in
+                            zip(reference[f"{name}.weight"], reference[f"{name}.bias"], strict=True)])
+
+    def gelu(vector):
+        return vector * (1 + torch.erf(vector / 2**0.5)) / 2
+
+    vectors = []
+    for query in reference["encoder.queries"]:
+        scores = [sum(query * token) / tokens.shape[1]**0.5 for token in tokens]
+        exponentials = [(score - torch.stack(scores).max()).exp() for score in scores]
+        pooled = sum(weight * token for weight, token in zip(exponentials, tokens, strict=True)) / sum(exponentials)
+        code = linear("encoder.output_projection", gelu(linear("encoder.input_projection", pooled))).tanh()
+        projected = linear("bridge.input_projection", code)
+        vectors.append(linear("bridge.output_projection", gelu(projected) if kind == "gelu" else projected))
+    reference_memory = torch.stack(vectors)
+    embedding = reader.model.get_input_embeddings()
+    expected_losses = []
+    for query, answer in queries:
+        # Full logits, explicit causal offsets, and per-token log probabilities
+        # independently check the first answer token and the final stop token.
+        prompt = torch.cat((embedding(before), reference_memory, embedding(query)))
+        inputs = torch.cat((prompt, embedding(answer[:-1]))).unsqueeze(0)
+        logits = reader.model(inputs_embeds=inputs, use_cache=False).logits[0].float()
+        terms = []
+        for offset, target in enumerate(answer):
+            scores = logits[len(prompt) - 1 + offset]
+            terms.append(torch.logsumexp(scores, dim=0) - scores[target])
+        expected_losses.append(sum(terms) / len(terms))
+    expected_losses = torch.stack(expected_losses)
+    torch.testing.assert_close(actual_losses, expected_losses, rtol=1e-6, atol=1e-7)
+    actual_loss, expected_loss = actual_losses.mean(), expected_losses.mean()
+    torch.testing.assert_close(actual_loss, expected_loss, rtol=1e-6, atol=1e-7)
+    actual_loss.backward()
+    expected_loss.backward()
+    for name, parameter in parameters.items():
+        actual_grad, expected_grad = parameter.grad, reference[name].grad
+        assert actual_grad is not None and expected_grad is not None, name
+        assert torch.isfinite(actual_grad).all() and torch.isfinite(expected_grad).all(), name
+        assert actual_grad.abs().sum() > 0 and expected_grad.abs().sum() > 0, name
+        torch.testing.assert_close(actual_grad, expected_grad, rtol=2e-4, atol=1e-8,
+                                   msg=lambda message: f"{name}: {message}")
+    assert all(parameter.grad is None for parameter in reader.model.parameters())
+    assert all(torch.equal(value, frozen[name]) for name, value in reader.model.state_dict().items())
+
+
+@pytest.mark.parametrize("kind", ["affine", "gelu"])
 def test_tiny_training_and_fresh_reader_reload_need_only_state(reader, kind, tmp_path):
     safetensors = pytest.importorskip("safetensors.torch")
     encoder, bridge = OneShotEncoder(16), ReadoutBridge(16, kind)

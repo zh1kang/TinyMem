@@ -1,7 +1,7 @@
 # TinyMem research handoff
 
 current readout-interface work: see [the local pre-Della handoff](readout_handoff.md).
-the approved one-shot comparison, reports, and profiling CLI pass 242 local tests.
+the approved one-shot comparison, reports, and profiling CLI pass 244 local tests, including independent tiny-reader answer-loss and gradient references for both arms.
 CUDA execution and full-size schedule approval remain user-run next steps.
 the material below is the historical association/update handoff, not the current execution queue.
 

@@ -1,5 +1,18 @@
 # Decision Log
 
+## 2026-09-09 - close the tiny-reader scalar-reference audit gap
+
+the goal audit correctly found that the original scalar bridge-output comparison did not establish answer-loss and gradient equivalence through a tiny reader.
+`test_scalar_reference_matches_tiny_reader_answer_loss_and_gradients` now compares both affine and GELU arms using independent cloned parameter tensors, scalar attention/projections, erf GELU, native reader logits, and manual token log probabilities.
+it checks unequal answer lengths, causal offsets, stop tokens, all nine parameter gradients, and frozen reader ownership.
+both focused cases passed; the selected CPU regression passed 244 tests in 41.46s.
+in-memory mutations that omit the stop token or halve gradients while preserving the loss were rejected for both arms.
+focused independent Claude review found no blocking defect and passed all 14 module tests.
+the first bounded focused review attempt exhausted its turn limit without a final report.
+production sources and sealed smoke artifacts are unchanged; the prior 242-test milestone below remains historical evidence.
+project and Obsidian handoffs now include this additional verification.
+CUDA execution, Della profiling, repeatability, and schedule decisions remain with the user as described in [the handoff](readout_handoff.md).
+
 ## 2026-09-08 - finish the local readout handoff
 
 paired reports, the production check/profile/run/report CLI, and a disposable Della profile script are implemented.

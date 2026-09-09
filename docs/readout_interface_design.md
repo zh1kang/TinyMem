@@ -1,7 +1,7 @@
 # lean readout-interface study
 
 status: locally implemented and verified; CUDA profiling and full-size schedule approval remain pending.
-see [the local handoff](readout_handoff.md) for 242-test evidence, review disposition, and user-run Della commands.
+see [the local handoff](readout_handoff.md) for 244-test evidence, review disposition, and user-run Della commands.
 the design below originated after research and three read-only consultation rounds with claude, 2026-09-07.
 the user approves this direction and asks for research and discussion before coding.
 no model implementation or training schedule is frozen by this document.
@@ -153,6 +153,7 @@ engineering readiness, before full-size training:
 
 1. paired arms have identical parameter shapes/counts and initial tensors; activation behavior differs as specified.
 2. independent scalar reference matches loss and gradients for a tiny reader.
+   verified for both arms by `test_scalar_reference_matches_tiny_reader_answer_loss_and_gradients` in `tests/test_readout_interface.py`, including answer/stop-token loss and all encoder/bridge parameter gradients.
 3. encoder and bridge get gradients, frozen reader gets none, and query inputs cannot affect the written state.
 4. inference state owns exactly 66 bytes, round-trips exactly, and yields matching fresh-context reads.
 5. actual tiny-model training, checkpoint load, evaluation controls, and reporting run end to end.

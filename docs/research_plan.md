@@ -55,7 +55,7 @@ three consultation rounds and refreshed primary-source readings produced [the le
 it uses a dedicated one-shot encoder, paired equally sized affine/GELU bridges, the existing 66-byte state, frozen Qwen, and files rather than a database.
 no full-size schedule is selected.
 
-the bounded candidate is now implemented and passes 242 local regression tests.
+the bounded candidate is now implemented and passes 244 local regression tests, including independent tiny-reader answer-loss and gradient references for both arms.
 the before-state runner, controls, paired reports, production CLI, and disposable profiling script are ready for user-run Della checks.
 see [the local handoff](readout_handoff.md) for commands, review findings, and explicit verification limits.
 freeze initialization, seeds, objectives, total updates, final-only scoring, and success/stop rules before full-size execution.

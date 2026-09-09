@@ -13,7 +13,7 @@ all six 1,000-step runs and thirteen confirmation evaluations are complete.
 the writer-free readout diagnostic also failed to establish reliable recall; its formal result remains `inconclusive_full_text_control_failed`.
 see [experiment closure and verification scope](docs/paired_update_closure.md) and [the researched next options](docs/readout_options_2026-09-07.md).
 the approved one-shot affine/GELU readout comparison is implemented and locally verified.
-see [the readout handoff](docs/readout_handoff.md) for the 242-test local check, Della profile commands, and remaining schedule decisions.
+see [the readout handoff](docs/readout_handoff.md) for the 244-test local check, Della profile commands, and remaining schedule decisions.
 no full-size training schedule is selected and CUDA execution is still unverified.
 
 ## closed experiment scope
