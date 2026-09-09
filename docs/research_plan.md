@@ -55,7 +55,9 @@ three consultation rounds and refreshed primary-source readings produced [the le
 it uses a dedicated one-shot encoder, paired equally sized affine/GELU bridges, the existing 66-byte state, frozen Qwen, and files rather than a database.
 no full-size schedule is selected.
 
-next implement and test this bounded candidate, preserving the closed sources and artifacts.
-freeze initialization, seeds, objectives, total updates, final-only scoring, and success/stop rules before execution.
+the bounded candidate is now implemented and passes 242 local regression tests.
+the before-state runner, controls, paired reports, production CLI, and disposable profiling script are ready for user-run Della checks.
+see [the local handoff](readout_handoff.md) for commands, review findings, and explicit verification limits.
+freeze initialization, seeds, objectives, total updates, final-only scoring, and success/stop rules before full-size execution.
 audit remaining unconsumed source groups before promising a new confirmation set.
-no new implementation, model training, cluster submission, or selected accuracy target is implied by this research review.
+no CUDA execution, cluster submission, or new confirmation use occurred in this local milestone.

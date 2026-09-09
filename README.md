@@ -12,7 +12,9 @@ the 66-byte paired-update experiment is **closed with a competence-limited negat
 all six 1,000-step runs and thirteen confirmation evaluations are complete.
 the writer-free readout diagnostic also failed to establish reliable recall; its formal result remains `inconclusive_full_text_control_failed`.
 see [experiment closure and verification scope](docs/paired_update_closure.md) and [the researched next options](docs/readout_options_2026-09-07.md).
-no follow-up architecture or training schedule is selected for execution.
+the approved one-shot affine/GELU readout comparison is implemented and locally verified.
+see [the readout handoff](docs/readout_handoff.md) for the 242-test local check, Della profile commands, and remaining schedule decisions.
+no full-size training schedule is selected and CUDA execution is still unverified.
 
 ## closed experiment scope
 

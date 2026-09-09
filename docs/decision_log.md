@@ -1,5 +1,23 @@
 # Decision Log
 
+## 2026-09-08 - finish the local readout handoff
+
+paired reports, the production check/profile/run/report CLI, and a disposable Della profile script are implemented.
+the 242-test CPU regression passed in 42.29s, including tiny BF16-reader profiling, separate-process checkpoint checks, paired statistics, and artifact validation.
+the input-only production check passed for 256 training and 32 development histories without model or confirmation loading.
+a two-step paired smoke run and the real report CLI completed under `artifacts/predictions/readout_local_handoff_20260908/`.
+these are implementation checks, not scientific recall evidence.
+
+independent read-only Claude review found no local blocking defect.
+record and match GPU model, CUDA build, dtype, and deterministic mode rather than silently mixing paired environments.
+retain strict full-text equality and require Della repeatability before long jobs; a float-tolerant comparison was not adopted after review.
+the existing FP32 feature boundary also passes a tiny CPU BF16 profile test.
+
+[the handoff](readout_handoff.md) records commands, evidence, and the remaining profiling/schedule decisions.
+the user explicitly defers CUDA execution to Della.
+no cluster job, full-size training, confirmation use, dependency change, or frozen-source edit occurred.
+the unrelated decoder hash remains `ea932d482a39e01b455a012f936d0babad5bb9a793de13c3b137a4f56e19cb65`.
+
 ## 2026-09-08 - verify the complete single-arm readout run
 
 the single-arm run binds encodings, initial and final weights, schedules, reader parameters, sources, metrics, and predictions.

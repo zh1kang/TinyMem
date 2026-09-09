@@ -1,6 +1,8 @@
 # lean readout-interface study
 
-status: candidate design after research and three read-only consultation rounds with claude, 2026-09-07.
+status: locally implemented and verified; CUDA profiling and full-size schedule approval remain pending.
+see [the local handoff](readout_handoff.md) for 242-test evidence, review disposition, and user-run Della commands.
+the design below originated after research and three read-only consultation rounds with claude, 2026-09-07.
 the user approves this direction and asks for research and discussion before coding.
 no model implementation or training schedule is frozen by this document.
 this is a new development study, not a continuation of the closed update experiment.
@@ -231,7 +233,8 @@ the root protocol and reports in the layout above belong to that pending integra
 
 1. verified: implement the small one-shot encoder and paired bridge module, with ownership, parameter-pairing, gradient, and query-blindness tests.
 2. verified: before-state training, fresh-context state reads, four state controls, full-text capability evaluation, and single-arm artifact binding.
-3. add a small runner/report path and a Della script, reusing artifact and statistics conventions without a database or new framework.
+3. verified locally: runner/report CLI, paired whole-history statistics, and a disposable Della profiling script, without a database or new framework.
+   each arm owns its protocol and seal; a separate report directory embeds those seals in `report.json` and writes `report.md`, without an extra root registry.
 4. profile on training data, then explicitly select and freeze steps, optimizer schedule, seed list, walltime, and qualification rules before GPU training.
 
 three paired optimization seeds are the intended final comparison, not permission to launch six full-size jobs now.

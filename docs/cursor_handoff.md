@@ -1,5 +1,10 @@
 # TinyMem research handoff
 
+current readout-interface work: see [the local pre-Della handoff](readout_handoff.md).
+the approved one-shot comparison, reports, and profiling CLI pass 242 local tests.
+CUDA execution and full-size schedule approval remain user-run next steps.
+the material below is the historical association/update handoff, not the current execution queue.
+
 implementation through `814c2ab`, local and not pushed.
 verification: 1,779 tests pass in a clean committed checkout with required datasets staged; both input-only preflights pass and all 24 frozen sources match. The unrelated decoder edit is excluded.
 no remote job has been submitted and CUDA hardware execution remains unverified.
