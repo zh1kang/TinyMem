@@ -67,6 +67,8 @@ use the existing artifact directory convention:
 artifacts/predictions/readout_interface_<run-id>/
   protocol.json
   <arm>_seed_<seed>/
+    protocol.json
+    encodings.json
     initial.safetensors
     final.safetensors
     metrics.jsonl
@@ -211,10 +213,24 @@ all runtime evidence uses tiny random Qwen on CPU, not production-model recall.
 full-text capability evaluation and outer run/report integration remain pending.
 profile the retained training graphs and three loss passes per evaluation query before full-size execution.
 
+## verified single-arm run milestone
+
+the complete single-arm path now binds token encodings, initial and final weights, schedules, reader parameters, execution sources, metrics, and predictions.
+completion is written last; failed runs remain unsealed and cannot reuse the output directory.
+full-text evaluation preserves every question and exact native history tokens.
+the joint checkpoint loader now reproduces reads in a separate process.
+source-episode aliases are rejected, and CPU initialization leaves accelerator random generators untouched.
+
+the combined regression passed 153 tests in 26.52s.
+independent review found no blocking defects; source-overlap coverage and the random-generator side effect were addressed after review.
+these remain tiny random Qwen CPU checks, not scientific recall results.
+paired reporting, the production CLI, and Della profiling remain pending.
+the root protocol and reports in the layout above belong to that pending integration.
+
 ## implementation queue
 
 1. verified: implement the small one-shot encoder and paired bridge module, with ownership, parameter-pairing, gradient, and query-blindness tests.
-2. implemented and tested: before-state training, fresh-context state reads, and four state controls; full-text capability evaluation remains pending.
+2. verified: before-state training, fresh-context state reads, four state controls, full-text capability evaluation, and single-arm artifact binding.
 3. add a small runner/report path and a Della script, reusing artifact and statistics conventions without a database or new framework.
 4. profile on training data, then explicitly select and freeze steps, optimizer schedule, seed list, walltime, and qualification rules before GPU training.
 

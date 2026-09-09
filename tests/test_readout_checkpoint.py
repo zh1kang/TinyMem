@@ -85,7 +85,8 @@ def test_checkpoint_operations_preserve_cpu_random_state(tmp_path):
 
 
 @pytest.mark.parametrize("kind", ["affine", "gelu"])
-def test_separate_process_reads_without_history_or_encoder(reader, tmp_path, kind):
+@pytest.mark.parametrize("checkpoint_format", ["bridge_only", "joint"])
+def test_separate_process_reads_without_history_or_encoder(reader, tmp_path, kind, checkpoint_format):
     encoder, bridge = OneShotEncoder(16), ReadoutBridge(16, kind).eval()
     state = controlled_state(encode_readout_history(reader, encoder, torch.tensor([3, 4, 3, 4])), "normal")
     before, questions = torch.tensor([3]), [torch.tensor([4, 5]), torch.tensor([3, 5])]
@@ -93,8 +94,12 @@ def test_separate_process_reads_without_history_or_encoder(reader, tmp_path, kin
     reader.model.save_pretrained(tmp_path / "reader")
     reader.tokenizer.save_pretrained(tmp_path / "reader")
     save_file({"values": state.values, "valid": state.valid}, tmp_path / "state.safetensors")
-    save_file(bridge.state_dict(), tmp_path / "bridge.safetensors")
-    # The child receives no serialized encoder, history tokens, or gold answers.
+    digest = ""
+    if checkpoint_format == "joint":
+        digest = save_checkpoint(tmp_path / "joint.safetensors", encoder, bridge)
+    else:
+        save_file(bridge.state_dict(), tmp_path / "bridge.safetensors")
+    # Neither path supplies history or gold. The joint loader's encoder is discarded before reading.
     script = '''
 import json, sys, torch
 from pathlib import Path
@@ -110,13 +115,18 @@ reader = PretrainedReader(model, AutoTokenizer.from_pretrained(root / "reader", 
 payload = load_file(root / "state.safetensors")
 state = LatentSlotState(payload["values"], payload["valid"])
 check_readout_state(state)
-bridge = ReadoutBridge(16, sys.argv[2]).eval()
-bridge.load_state_dict(load_file(root / "bridge.safetensors"), strict=True)
+if sys.argv[3] == "joint":
+    from tinymem.research.readout_checkpoint import load_checkpoint
+    encoder, bridge = load_checkpoint(root / "joint.safetensors", expected_sha256=sys.argv[4], reader_width=16, kind=sys.argv[2])
+    del encoder
+else:
+    bridge = ReadoutBridge(16, sys.argv[2]).eval()
+    bridge.load_state_dict(load_file(root / "bridge.safetensors"), strict=True)
 results = [read_state_answer(reader, bridge, state, torch.tensor([3]), torch.tensor(q), max_new_tokens=3)
            for q in ([4, 5], [3, 5])]
 (root / "result.json").write_text(json.dumps({"values": state.values.tolist(), "bytes": state.nbytes, "results": results}))
 '''
-    subprocess.run([sys.executable, "-c", script, str(tmp_path), kind], check=True, timeout=60,
+    subprocess.run([sys.executable, "-c", script, str(tmp_path), kind, checkpoint_format, digest], check=True, timeout=60,
                    capture_output=True, text=True,
                    env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
     result = json.loads((tmp_path / "result.json").read_text())

@@ -1,5 +1,20 @@
 # Decision Log
 
+## 2026-09-08 - verify the complete single-arm readout run
+
+the single-arm run binds encodings, initial and final weights, schedules, reader parameters, sources, metrics, and predictions.
+completion is written last; failed runs stay unsealed and cannot reuse their output directory.
+full-text evaluation retains every question and exact native history tokens.
+the joint checkpoint loader reproduces reads in a separate process.
+source-episode aliases are rejected before execution.
+CPU initialization now seeds only the CPU generator and restores its previous state without reseeding accelerators.
+
+the combined regression passed 153 tests in 26.52s.
+independent review found no blocking defects; direct source-overlap tests and the random-generator fix address its actionable observations.
+these are tiny random Qwen CPU checks, not scientific recall results or production-device qualification.
+paired reports, the production CLI, and the Della profiling script remain pending.
+no Della job, full-size training, or confirmation use occurred.
+
 ## 2026-09-08 - verify before-state training and controlled reads
 
 the new readout runner tokenizes only before histories and trains the encoder and bridge with the reader frozen in evaluation mode.
