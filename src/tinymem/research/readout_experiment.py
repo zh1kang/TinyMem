@@ -16,6 +16,7 @@ from tinymem.research.pretrained import PretrainedReader
 from tinymem.research.readout_checkpoint import load_checkpoint, save_checkpoint
 from tinymem.research.readout_evaluation import evaluate_full_text, evaluate_readout
 from tinymem.research.readout_runner import EncodedBefore, train_readout_step
+from tinymem.research.study_runtime import synchronize as _synchronize
 from tinymem.research.update_protocol import file_sha256, read_json
 from tinymem.research.update_runner import training_schedule
 
@@ -62,7 +63,7 @@ def _write_json(path: Path, value) -> None:
 
 
 def _validate_inputs(reader, splits, *, kind, seed, steps, learning_rate, weight_decay,
-                     max_new_tokens, input_identity) -> None:
+                     max_new_tokens, input_identity, required_splits=SPLITS) -> None:
     if kind not in ("affine", "gelu"):
         raise ValueError("kind must be affine or gelu")
     if type(seed) is not int or seed < 0:
@@ -81,12 +82,12 @@ def _validate_inputs(reader, splits, *, kind, seed, steps, learning_rate, weight
         raise ValueError("reader must be in evaluation mode")
     if any(p.requires_grad or p.grad is not None for p in reader.model.parameters()):
         raise ValueError("reader must be frozen with no parameter gradients")
-    if not isinstance(splits, Mapping) or set(splits) != set(SPLITS):
-        raise ValueError("only train and development splits are permitted")
+    if not isinstance(splits, Mapping) or set(splits) != set(required_splits):
+        raise ValueError(f"required splits: {required_splits}")
     histories, cases = set(), set()
     source_seen = {key: set() for key in ("source_group_ids", "source_case_ids", "source_context_sha256")}
     vocab, context = reader.model.config.vocab_size, reader.model.config.max_position_embeddings
-    for split in SPLITS:
+    for split in required_splits:
         rows = splits[split]
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)) or len(rows) < 2:
             raise ValueError("each split requires at least two histories for shuffling")
@@ -166,6 +167,11 @@ def run_arm(
         "input_identity": input_identity, "input_identity_verification": "caller_declared",
         "reader_parameters_sha256": reader_hash, "reader_config": reader.model.config.to_dict(),
         "reader_width": width, "device": str(reader.model.device), "torch_version": str(torch.__version__),
+        "cuda_version": torch.version.cuda,
+        "device_name": (torch.cuda.get_device_name(reader.model.device)
+                        if reader.model.device.type == "cuda" else str(reader.model.device)),
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+        "reader_dtype": str(reader.model.get_input_embeddings().weight.dtype),
         "source_sha256": sources,
         "shared_parameters": {"encoder": sum(p.numel() for p in encoder.parameters()),
                               "bridge": sum(p.numel() for p in bridge.parameters())},
@@ -192,11 +198,20 @@ def run_arm(
             record(evaluate_full_text(reader, splits[split], max_new_tokens=max_new_tokens), split, "reference")
         optimizer = torch.optim.AdamW(list(encoder.parameters()) + list(bridge.parameters()),
                                       lr=learning_rate, weight_decay=weight_decay)
+        device = reader.model.device
+        _synchronize(device)
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
         with (output / "metrics.jsonl").open("x") as metrics:
             for step, index in enumerate(schedule, 1):
+                _synchronize(device)
+                step_started = time.perf_counter()
                 result = train_readout_step(reader, encoder, bridge, splits["train"][index], optimizer)
-                metrics.write(_json({**result, "step": step, "history_id": splits["train"][index].history_id}) + "\n")
+                _synchronize(device)
+                metrics.write(_json({**result, "step": step, "history_id": splits["train"][index].history_id,
+                                     "seconds": time.perf_counter() - step_started}) + "\n")
                 metrics.flush()
+        training_peak = torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None
         digest = save_checkpoint(output / "final.safetensors", encoder, bridge)
         del optimizer, encoder, bridge
         encoder, bridge = load_checkpoint(output / "final.safetensors", expected_sha256=digest,
@@ -211,8 +226,128 @@ def run_arm(
         raise ValueError("execution source identity changed during the run")
     complete = {"kind": "readout_arm_complete_v1", "files": {name: file_sha256(output / name) for name in FILES},
                 "reader_parameters_sha256": reader_hash, "prediction_count": prediction_count,
-                "elapsed_seconds": time.perf_counter() - started}
+                "elapsed_seconds": time.perf_counter() - started,
+                "training_peak_memory_bytes": training_peak}
     _write_json(output / "complete.json", complete)
+    return complete
+
+
+PROFILE_FILES = ("protocol.json", "schedule.json", "metrics.jsonl", "evaluation.json")
+
+
+def profile_arm(
+    reader: PretrainedReader, rows: Sequence[EncodedBefore], output: Path, *,
+    kind: ReadoutKind, seed: int, steps: int, learning_rate: float, weight_decay: float,
+    max_new_tokens: int, input_identity: dict,
+) -> dict:
+    """Measure disposable training and controlled evaluation on training rows only.
+
+    The caller supplies training provenance; no development or confirmation loader
+    is invoked here. Every step is recorded, including cold-start optimizer setup.
+    CUDA peaks include resident reader weights, not just incremental allocations.
+    CPU and MPS peak memory are unavailable, never reported as zero.
+    """
+    _validate_inputs(reader, {"train": rows}, kind=kind, seed=seed, steps=steps,
+                     learning_rate=learning_rate, weight_decay=weight_decay,
+                     max_new_tokens=max_new_tokens, input_identity=input_identity,
+                     required_splits=("train",))
+    output = Path(output)
+    if output.exists():
+        raise FileExistsError(output)
+    device = reader.model.device
+    if device.type not in ("cpu", "cuda", "mps"):
+        raise ValueError("profiling supports CPU, CUDA, or MPS")
+    sources, reader_hash = _source_hashes(), _reader_hash(reader)
+    width = reader.model.get_input_embeddings().embedding_dim
+    with torch.random.fork_rng(devices=[]):
+        torch.default_generator.manual_seed(seed)
+        encoder, bridge = OneShotEncoder(width), ReadoutBridge(width, kind)
+    encoder.to(device)
+    bridge.to(device)
+    schedule = training_schedule(len(rows), steps, seed)
+    protocol = {
+        "kind": "readout_profile_protocol_v1", "arm": kind, "seed": seed,
+        "training_steps": steps, "data_role": "training_only",
+        "input_identity": input_identity, "input_identity_verification": "caller_declared",
+        "encodings_sha256": hashlib.sha256(_json([asdict(row) for row in rows]).encode()).hexdigest(),
+        "reader_parameters_sha256": reader_hash, "reader_config": reader.model.config.to_dict(),
+        "source_sha256": sources, "device": str(device), "torch_version": str(torch.__version__),
+        "cuda_version": torch.version.cuda,
+        "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else str(device),
+        "optimizer": {"kind": "AdamW", "lr": learning_rate, "weight_decay": weight_decay,
+                      "betas": [0.9, 0.999], "eps": 1e-8, "clip_norm": 1.0},
+        "max_new_tokens": max_new_tokens, "persistent_bytes": STATE_BYTES,
+        "feature_cache": False, "checkpoint_reuse": False, "warmup_steps_excluded": 0,
+        "memory_measurement": "cuda_max_memory_allocated_including_reader" if device.type == "cuda" else "unavailable",
+        "history_tokens": [len(row.history_ids) for row in rows],
+        "history_ids": [row.history_id for row in rows],
+    }
+    _json(protocol)
+    output.mkdir(parents=True, exist_ok=False)
+    _write_json(output / "protocol.json", protocol)
+    _write_json(output / "schedule.json", schedule)
+    optimizer = torch.optim.AdamW(list(encoder.parameters()) + list(bridge.parameters()),
+                                  lr=learning_rate, weight_decay=weight_decay)
+    _synchronize(device)
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    with (output / "metrics.jsonl").open("x") as metrics:
+        for step, index in enumerate(schedule, 1):
+            _synchronize(device)
+            started = time.perf_counter()
+            result = train_readout_step(reader, encoder, bridge, rows[index], optimizer)
+            _synchronize(device)
+            seconds = time.perf_counter() - started
+            metrics.write(_json({**result, "step": step, "history_id": rows[index].history_id,
+                                 "seconds": seconds, "cold_start": step == 1}) + "\n")
+            metrics.flush()
+    training_peak = torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None
+    # Match post-checkpoint evaluation ownership: no optimizer or retained gradients.
+    optimizer.zero_grad(set_to_none=True)
+    del optimizer
+    _synchronize(device)
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    started = time.perf_counter()
+    readout_count = len(evaluate_readout(reader, encoder, bridge, rows, max_new_tokens=max_new_tokens))
+    _synchronize(device)
+    readout_seconds = time.perf_counter() - started
+    started = time.perf_counter()
+    full_text_count = len(evaluate_full_text(reader, rows, max_new_tokens=max_new_tokens))
+    _synchronize(device)
+    full_text_seconds = time.perf_counter() - started
+    evaluation_peak = torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None
+    _write_json(output / "evaluation.json", {
+        "data_role": "training_only", "readout_predictions": readout_count,
+        "full_text_predictions": full_text_count,
+        "readout_seconds": readout_seconds, "full_text_seconds": full_text_seconds,
+        "seconds": readout_seconds + full_text_seconds, "peak_memory_bytes": evaluation_peak,
+    })
+    if _reader_hash(reader) != reader_hash or any(p.requires_grad or p.grad is not None for p in reader.model.parameters()):
+        raise ValueError("reader changed during profiling")
+    if _source_hashes() != sources:
+        raise ValueError("execution source identity changed during profiling")
+    complete = {
+        "kind": "readout_compute_profile_v1", "checkpoint_reuse": False,
+        "training_steps": steps, "evaluation_histories": len(rows),
+        "training_peak_memory_bytes": training_peak,
+        "files": {name: file_sha256(output / name) for name in PROFILE_FILES},
+    }
+    _write_json(output / "complete.json", complete)
+    return complete
+
+
+def verify_profile(output: Path) -> dict:
+    """Detect damaged profile artifacts; this is not scientific run completion."""
+    output = Path(output)
+    complete = read_json(output / "complete.json")
+    if (complete.get("kind") != "readout_compute_profile_v1"
+            or complete.get("checkpoint_reuse") is not False
+            or set(complete.get("files", {})) != set(PROFILE_FILES)):
+        raise ValueError("invalid profile completion identity")
+    for name in PROFILE_FILES:
+        if file_sha256(output / name) != complete["files"][name]:
+            raise ValueError(f"profile artifact identity changed: {name}")
     return complete
 
 
