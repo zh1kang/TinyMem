@@ -1,19 +1,22 @@
 # TinyMem
 
-TinyMem studies whether query-independent learned memory can accept new or corrected facts without damaging other stored facts, under a fixed persistent-byte budget.
+TinyMem studies whether a language model can keep a small learned memory, update it with new or corrected facts, and still recall facts that were not changed.
+The memory is built before the questions arrive, and each history has a fixed storage budget.
 The repository contains memory implementations, controlled experiments, and tests.
 
 **Phase one is complete.**
 The tested systems did not demonstrate an advantage over compact explicit storage.
 The controlled follow-up found that repeating a true fact can reduce recall of other facts, even when no correct answer changes.
-This occurred across three fresh writer initializations, in both LM answers and a separate fixed linear probe.
+This occurred across three fresh writer initializations, in both language model (LM) answers and a separate fixed linear probe, a classifier that reads facts from the stored state.
 Many LM errors remained recoverable by the probe.
+Phase two starts with the [future-work plan](#future-work): test larger memory sizes and evaluate on new examples that have not guided development.
 
 ## Results
 
 The final task has four independent binary facts and a 66-byte learned state.
 Each of three writer seeds produces two paired continuation arms, called uniform and correction weighted.
 After eight prefix writes, the evaluation applies eight truthful writes to either one fact or all four facts.
+The prefix is the shared starting sequence; balanced refresh repeats all four facts.
 “Unspoken” means the other three facts in the single-fact condition.
 Changes are measured from each model's own prefix endpoint.
 
@@ -54,11 +57,19 @@ This method has not established bAbI/BABILong performance or a storage advantage
 
 ## Architecture
 
+The current research system has three parts: a learned initializer, a learned updater, and a fixed reader.
+
 ```text
 Initial history -> frozen Qwen features -> learned initializer -> state
 Current statement + previous state -> learned updater -> next state
 Detached state -> fixed affine bridge + one question -> frozen reader -> answer
 ```
+
+The initializer compresses the starting history into memory.
+The updater combines that memory with each new statement.
+The bridge converts the small stored vectors into inputs for the reader, which generates an answer to one question.
+The reader was adapted in an earlier stage and stays frozen during writer training.
+The separate linear probe is an evaluation tool, not part of the answer-generation path.
 
 The initializer and updater use [QueryPoolSlotWriter](src/tinymem/memory/query_pool_slots.py).
 Each pools 2,048-wide features into two width-eight slots and applies a coordinate-wise gated update:
@@ -68,6 +79,7 @@ next = old + sigmoid(gate(old, candidate)) * (tanh(candidate) - old)
 ```
 
 The persistent state contains sixteen FP32 values and two Boolean validity flags: 66 bytes of tensor storage.
+This is one tested size, not a measured optimum; phase one did not compare memory sizes.
 Shared weights, temporary computation, and file headers are separate costs.
 The writer receives no future question, answer, or gold write address.
 The [read boundary](src/tinymem/research/readout_read.py) accepts a detached state and one question, without history features or a raw-history bypass.
@@ -78,6 +90,28 @@ Each final lineage trains an initial writer for 400 steps, freezes its initializ
 All four-write training transitions remain attached.
 A state-loss coefficient is calibrated from sixteen training-only gradient measurements and then shared by both continuation arms.
 The fixed linear probe is trained on old training-path states, with four fact-order validation folds and 99 trajectory-label shuffle controls per fit.
+
+## Future work
+
+Phase two asks: **how do memory size and the update rule affect recall after repeated writes?**
+The work below is planned; this repository does not yet report phase-two results.
+
+1. **Create an untouched evaluation set.**
+   Keep development examples separate from final evaluation, with new statement wording and write sequences.
+   Fix the evaluation procedure and training schedule before inspecting final results.
+   The phase-one panel was excluded from writer training but had already guided exploratory analysis.
+2. **Compare memory sizes.**
+   Start with the current two-slot design at widths 8, 32, and 128: 66, 258, and 1,026 bytes in FP32, including validity flags.
+   Train a compatible reader interface for each size under a matched procedure, and report shared parameter counts and compute as well as stored bytes.
+   Compare initial recall and changes after writes across fresh initializations; a larger state is a hypothesis to test, not a promised fix.
+3. **Test more selective writes.**
+   In a separate matched comparison, test an updater that can preserve unrelated parts of memory when a statement concerns only one fact.
+   Keep memory size fixed for this comparison so improvements are not attributed to both changes at once.
+
+Each comparison should measure corrections, truthful repetitions, and recall of facts that were not mentioned, using both LM answers and a separately fitted probe.
+Report every initialization and paired repairs and new errors, including weaker runs.
+Retain the exact explicit-storage baseline: improving learned recall alone does not establish a storage advantage.
+Broader bAbI/BABILong evaluation remains a later test of usefulness beyond this controlled task.
 
 ## Setup and tests
 
