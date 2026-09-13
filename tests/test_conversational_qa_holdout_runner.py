@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from scripts.evaluate_conversational_qa import (
@@ -6,9 +7,27 @@ from scripts.evaluate_conversational_qa import (
 )
 
 
-def test_holdout_loader_uses_only_test_examples() -> None:
+def test_holdout_loader_uses_only_test_examples(tmp_path: Path) -> None:
+    repository_root = tmp_path
+    data_root = repository_root / "data/raw/tasks_1-20_v1-2/en-valid-10k"
+    data_root.mkdir(parents=True)
+    (repository_root / "data/manifest.json").write_text(json.dumps({
+        "datasets": {"babi": {
+            "revision": "synthetic-babi-test-v1",
+            "source": "test://synthetic-babi",
+        }},
+    }))
+    for task in ("qa1", "qa2"):
+        episodes = []
+        for index in range(3):
+            episodes.extend([
+                "1 Mary went to the hallway.",
+                "2 Where is Mary?\thallway\t1",
+            ])
+        (data_root / f"{task}_test.txt").write_text("\n".join(episodes) + "\n")
+
     examples = load_babi_test_examples(
-        Path("data/raw/tasks_1-20_v1-2/en-valid-10k"),
+        data_root,
         tasks=("qa1", "qa2"),
         examples_per_task=3,
         seed=7,
@@ -19,11 +38,11 @@ def test_holdout_loader_uses_only_test_examples() -> None:
     assert {example.split for example in examples} == {"test"}
 
     provenance = build_babi_provenance(
-        Path.cwd(),
+        repository_root,
         tasks=("qa1", "qa2"),
         examples=examples,
     )
-    assert provenance["revision"] == "tasks_1-20_v1-2"
+    assert provenance["revision"] == "synthetic-babi-test-v1"
     assert [source["selected_examples"] for source in provenance["test_files"]] == [
         3,
         3,

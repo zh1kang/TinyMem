@@ -16,7 +16,6 @@ from tinymem.utils.seed import seed_everything
 
 
 REPOSITORY = Path(__file__).resolve().parents[3]
-ORIGINAL_REPOSITORY = Path("/Users/caleb/TinyMem")
 PORTABLE_SOURCES = (
     "scripts/opaque/__init__.py",
     "scripts/opaque/train.py",
@@ -39,13 +38,17 @@ PORTABLE_SOURCES = (
 def repository_path(value: str | Path, *, root: Path = REPOSITORY) -> Path:
     """Relocate only the recorded repository prefix; return a relative path."""
     path = Path(value)
+    original = os.environ.get("TINYMEM_ORIGINAL_REPOSITORY")
+    original_root = Path(original) if original else None
+    if original_root is not None and (not original_root.is_absolute() or ".." in original_root.parts):
+        raise ValueError("original repository must be absolute and contain no parent traversal")
     if ".." in path.parts:
         raise ValueError("parent traversal is not a repository path")
     if path.is_absolute():
         if path.is_relative_to(root):
             path = path.relative_to(root)
-        elif path.is_relative_to(ORIGINAL_REPOSITORY):
-            path = path.relative_to(ORIGINAL_REPOSITORY)
+        elif original_root is not None and path.is_relative_to(original_root):
+            path = path.relative_to(original_root)
         else:
             raise ValueError(f"path is outside the current or original repository: {value}")
     if not (root / path).resolve().is_relative_to(root.resolve()):

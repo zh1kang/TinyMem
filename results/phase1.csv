@@ -1,0 +1,7 @@
+seed,arm,initial_lm_correct,initial_total,balanced_total,balanced_probe_before,balanced_probe_after,balanced_lm_before,balanced_lm_after,unspoken_total,unspoken_probe_before,unspoken_probe_after,unspoken_lm_before,unspoken_lm_after,balanced_probe_minus_lm_pp,balanced_probe_change_pp,unspoken_probe_change_pp,unspoken_lm_change_pp,balanced_both_correct,balanced_lm_wrong_probe_correct,balanced_lm_correct_probe_wrong,balanced_both_wrong,balanced_repairs,balanced_damage,unspoken_both_correct,unspoken_lm_wrong_probe_correct,unspoken_lm_correct_probe_wrong,unspoken_both_wrong,unspoken_repairs,unspoken_damage
+2027,uniform,60,64,256,238,250,237,244,768,714,464,711,466,2.34375,4.6875,-32.552083333333336,-31.901041666666668,240,10,4,2,16,4,402,62,64,240,26,276
+2027,correction_weighted,60,64,256,244,251,238,247,768,732,482,714,451,1.5625,2.734375,-32.552083333333336,-34.24479166666667,243,8,4,1,9,2,402,80,49,237,16,266
+2028,uniform,62,64,256,229,251,211,222,768,687,498,633,483,11.328125,8.59375,-24.609375,-19.53125,219,32,3,2,23,1,386,112,97,173,34,223
+2028,correction_weighted,62,64,256,230,244,213,224,768,690,493,639,457,7.8125,5.46875,-25.651041666666668,-23.697916666666664,217,27,7,5,20,6,370,123,87,188,15,212
+2029,uniform,50,64,256,204,190,171,170,768,612,482,513,438,7.8125,-5.46875,-16.927083333333332,-9.765625,136,54,34,32,20,34,329,153,109,177,31,161
+2029,correction_weighted,50,64,256,191,184,176,182,768,573,455,528,421,0.78125,-2.734375,-15.364583333333334,-13.932291666666666,135,49,47,25,22,29,306,149,115,198,34,152

@@ -1,7 +1,6 @@
 """Verify sealed evaluations and produce descriptive, count-aware update reports."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import torch

@@ -61,8 +61,8 @@ def relocated(tmp_path):
 
 
 def test_relocated_cli_resolves_historical_paths_and_refuses_optimized_python(relocated):
-    environment = os.environ | {"PYTHONPATH": str(relocated / "src")}
-    code = "from tinymem.research.study_runtime import sha256; print(sha256('/Users/caleb/TinyMem/src/tinymem/research/pretrained.py'))"
+    environment = os.environ | {"PYTHONPATH": str(relocated / "src"), "TINYMEM_ORIGINAL_REPOSITORY": "/archive/tinymem"}
+    code = "from tinymem.research.study_runtime import sha256; print(sha256('/archive/tinymem/src/tinymem/research/pretrained.py'))"
     result = subprocess.run([sys.executable, "-c", code], cwd=relocated, env=environment,
                             capture_output=True, text=True, check=True)
     assert len(result.stdout.strip()) == 64
@@ -83,7 +83,7 @@ def test_portable_cli_exposes_device_without_loading_model(module):
 def test_relocated_synthetic_predictions_aggregate_and_report(relocated):
     pytest.importorskip("peft")
     pytest.importorskip("transformers")
-    environment = os.environ | {"PYTHONPATH": str(relocated / "src")}
+    environment = os.environ | {"PYTHONPATH": str(relocated / "src"), "TINYMEM_ORIGINAL_REPOSITORY": "/archive/tinymem"}
     command = [sys.executable, "-c", "import json; from tinymem.research.study_runtime import execution_record, prepare_device; print(json.dumps(execution_record(prepare_device('cpu'))))"]
     execution = json.loads(subprocess.run(command, cwd=relocated, env=environment, capture_output=True,
                                           text=True, check=True).stdout)
@@ -111,7 +111,7 @@ def test_relocated_synthetic_predictions_aggregate_and_report(relocated):
               "baseline_conditions": baseline_conditions, "memory_conditions": ["opaque:normal"],
               "data_protocol_sha256": "fixture-data", "reader_gate_results_sha256": "fixture-reader",
               "vocabulary_sha256": "fixture-vocabulary", "source_sha256": {
-                  "/Users/caleb/TinyMem/historical.py": hashlib.sha256((relocated / "historical.py").read_bytes()).hexdigest()}}
+                  "/archive/tinymem/historical.py": hashlib.sha256((relocated / "historical.py").read_bytes()).hexdigest()}}
     study_hash = save(relocated / "study.json", frozen)
 
     def predictions(conditions, *, learned=False):

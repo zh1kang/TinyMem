@@ -16,16 +16,27 @@ from tinymem.research.pretrained import PretrainedReader
 from tinymem.research.recurrent_memory import NativeRecurrentMemory
 
 
-def test_paths_relocate_only_the_known_root(tmp_path):
+def test_paths_relocate_only_the_known_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYMEM_ORIGINAL_REPOSITORY", "/archive/tinymem")
     assert runtime.repository_path("src/file.py", root=tmp_path) == Path("src/file.py")
     assert runtime.repository_path(tmp_path / "src/file.py", root=tmp_path) == Path("src/file.py")
-    assert runtime.repository_path("/Users/caleb/TinyMem/src/file.py", root=tmp_path) == Path("src/file.py")
+    assert runtime.repository_path("/archive/tinymem/src/file.py", root=tmp_path) == Path("src/file.py")
     for value in ("../outside", "src/../../outside", "/other/project/file.py"):
         with pytest.raises(ValueError):
             runtime.repository_path(value, root=tmp_path)
     (tmp_path / "escape").symlink_to(tmp_path.parent, target_is_directory=True)
     with pytest.raises(ValueError, match="symlink"):
         runtime.repository_path("escape/file.py", root=tmp_path)
+
+
+@pytest.mark.parametrize("original", ["relative/archive", "/archive/../outside"])
+def test_original_root_must_be_explicit_and_safe(tmp_path, monkeypatch, original):
+    monkeypatch.delenv("TINYMEM_ORIGINAL_REPOSITORY", raising=False)
+    with pytest.raises(ValueError, match="outside"):
+        runtime.repository_path("/archive/tinymem/src/file.py", root=tmp_path)
+    monkeypatch.setenv("TINYMEM_ORIGINAL_REPOSITORY", original)
+    with pytest.raises(ValueError, match="absolute.*parent"):
+        runtime.repository_path("/archive/tinymem/src/file.py", root=tmp_path)
 
 
 def test_missing_source_and_changed_execution_fail():

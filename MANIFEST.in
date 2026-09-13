@@ -1,0 +1,6 @@
+include README.md requirements.txt uv.lock
+include data/manifest.json
+recursive-include configs *.json
+recursive-include scripts *.py *.sh *.slurm *.filter
+recursive-include tests *.py
+recursive-include results *.csv *.png

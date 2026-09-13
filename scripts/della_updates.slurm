@@ -8,7 +8,6 @@
 #SBATCH --partition=gpu
 #SBATCH --constraint=gpu40
 #SBATCH --time=00:30:00
-#SBATCH --chdir=/scratch/gpfs/JORDANAT/caleb/TinyMem
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
@@ -27,7 +26,7 @@ export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
 export SRUN_CPUS_PER_TASK="$SLURM_CPUS_PER_TASK"
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export HF_HUB_OFFLINE=1
-export HF_HOME=/scratch/gpfs/JORDANAT/caleb/.cache/huggingface
+export HF_HOME="${HF_HOME:-$PWD/.cache/huggingface}"
 export PYTHONUNBUFFERED=1
 nvidia-smi
 python -m pip check

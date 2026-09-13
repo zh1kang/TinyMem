@@ -5,15 +5,18 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
 build/
 dist/
 *.egg-info/
 
+.env
+.env.*
+.pi/
+.codex/
+.claude/
+logs/
+artifacts/
 data/raw/
 data/processed/
-
-artifacts/checkpoints/
-artifacts/logs/
-artifacts/predictions/
-artifacts/memory_traces/
-artifacts/figures/
+data/installed.lock.json
