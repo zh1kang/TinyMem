@@ -1,0 +1,35 @@
+#!/bin/bash
+#SBATCH --job-name=tinymem-writer
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=02:00:00
+#SBATCH --output=logs/%x-%A_%a.out
+#SBATCH --error=logs/%x-%A_%a.err
+
+set -eo pipefail
+stage="$1"
+shift
+module purge
+module load "${TINYMEM_CONDA_MODULE:-anaconda3/2026.7}"
+conda activate "${TINYMEM_CONDA_ENV:-tinymem-py311}"
+set -u
+export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+export SRUN_CPUS_PER_TASK="$SLURM_CPUS_PER_TASK"
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+export HF_HUB_OFFLINE=1
+export TOKENIZERS_PARALLELISM=false
+export PYTHONUNBUFFERED=1
+export PYTHONPATH="$PWD/src"
+export TORCHINDUCTOR_CACHE_DIR="$PWD/.cache/inductor/${SLURM_JOB_ID}"
+export TRITON_CACHE_DIR="$PWD/.cache/triton/${SLURM_JOB_ID}"
+export XDG_CACHE_HOME="$PWD/.cache/xdg/${SLURM_JOB_ID}"
+export CUDA_CACHE_PATH="$PWD/.cache/cuda/${SLURM_JOB_ID}"
+export HF_HOME="$PWD/.cache/huggingface"
+python -m pip check
+if [[ "$stage" == train ]]; then
+    srun python -m scripts.run_distilled_fact_study "$stage" "$@" --cell "${SLURM_ARRAY_TASK_ID:?array index required}"
+else
+    srun python -m scripts.run_distilled_fact_study "$stage" "$@"
+fi
