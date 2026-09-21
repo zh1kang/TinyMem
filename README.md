@@ -66,7 +66,7 @@ Stages refuse to run if any hashed input, source file, or runtime differs from t
 
 | Study | Question | Runner | Cluster wrapper |
 |---|---|---|---|
-| Phase one | Can a gated writer preserve unmentioned facts through truthful repetition? | [independent fact lineage](src/tinymem/research/independent_fact_recurrent_training.py) | archived |
+| Phase one | Can a gated writer preserve unmentioned facts through truthful repetition? | `independent_fact_recurrent_training.py` at tag `phase-one-archive` | archived |
 | Delta comparison | Do residual updates with learned addresses retain better than gating? | [run_delta_fact_study.py](scripts/run_delta_fact_study.py) | [della_delta_fact.slurm](scripts/della_delta_fact.slurm) |
 | Correct-state readout | Can the read interface use a correct query-independent state? | [run_oracle_fact_study.py](scripts/run_oracle_fact_study.py) | [della_oracle_fact.slurm](scripts/della_oracle_fact.slurm) |
 | Learned writer | Can a writer learn correct states, and why does it collapse? | [run_distilled_fact_study.py](scripts/run_distilled_fact_study.py) | [CPU](scripts/della_distilled_fact_cpu.slurm), [GPU](scripts/della_distilled_fact_gpu.slurm) |
@@ -91,10 +91,30 @@ Changes are measured from each model's own prefix endpoint, in percentage points
 | 2029 | Uniform | +7.81 | -5.47 | -16.93 | -9.77 |
 | 2029 | Correction weighted | +0.78 | -2.73 | -15.36 | -13.93 |
 
-![Three-seed confirmation results](results/phase1.png)
+![Phase one: change in recall after eight truthful writes, by writer seed and arm](results/phase1.png)
 
+Balanced refresh moves recall by a few points in either direction; repeating one fact costs 10 to 34 points on the facts that were not mentioned.
 The [results CSV](results/phase1.csv) has exact counts and denominators.
 The arms share a reader, data order, and evaluation panel, so they are not six independent replications.
+
+### Learned writer and QA1 readout
+
+The distilled study trains the 258-byte delta writer to reproduce parser-written states and then reads the states it produces with three frozen readers.
+
+![Writer collapse: correction and retention per writer seed, with and without hidden LayerNorm](results/writer_collapse.png)
+
+Five of twelve control seeds sit at chance on both metrics; their write strength or hidden activations collapsed to zero.
+Affine-free LayerNorm over the 64 hidden coordinates lifts every collapsed seed above 90% and helps most of the others; one seed loses 2.5 points of retention.
+Memory, parameter count, and byte budget are unchanged.
+Per-seed values are in [writer_collapse.csv](results/writer_collapse.csv).
+
+![QA1 readout: state-supervised, frozen-key, and answer-only writers against oracle and zero-memory bands](results/qa1_readout.png)
+
+The same writer architecture spans the whole range depending on what supervises it.
+State supervision reaches the oracle band on the official test.
+Answer-only training sits between 14% and 44% on development questions.
+Freezing the key branch from a state-supervised writer and training only the value branch from answers reaches 92% or better in six of twelve pairs and stays below 30% in the other six; freezing an answer-only key branch instead does not help.
+Per-cell values are in [qa1_readout.csv](results/qa1_readout.csv).
 
 ### Storage frontier
 
@@ -104,7 +124,7 @@ Each record is encoded by the unadapted frozen Qwen base and written by token cr
 Explicit baselines are compressed recent text, compressed text selected for lexical diversity, and a training-only dictionary log (152,830 shared dictionary bytes, reported separately), each capped at the same budgets.
 Evaluation scored all 5,000 official test questions in clean and heavy-distractor variants from the fixed final checkpoint, with zero-memory and other-story controls, then transferred to all 500 installed BABILong 1k examples as raw text.
 
-![Accuracy by retained bytes](results/storage_frontier.png)
+![Storage frontier: five-task accuracy by retained bytes, clean and with distractors](results/storage_frontier.png)
 
 | Method | 64 B | 256 B | 1,024 B |
 |---|---:|---:|---:|
@@ -114,6 +134,7 @@ Evaluation scored all 5,000 official test questions in clean and heavy-distracto
 | Dictionary recent text | 99.7 (99.6-99.8) | 99.7 (99.7-99.8) | 99.7 (99.7-99.8) |
 
 Five-task mean exact-match accuracy in percent on clean official test questions; parentheses give the range across three seeds.
+Per-seed values are in [storage_frontier.csv](results/storage_frontier.csv).
 Zero-memory controls averaged 17.2% and other-story controls 16.6% for the learned cells.
 Full text scored 99.6% to 99.8%, and the hand-written two-byte QA1 state scored 100%.
 Learned-cell training cross-entropy plateaued at 0.65 against 0.18 for the text readers.
@@ -141,19 +162,28 @@ uv run --no-sync python -m pytest
 Tests use small tensors, synthetic inputs, and tiny randomly initialized readers.
 They check contracts and execution paths; they do not measure full-size model accuracy.
 
+The figures in `results/` are drawn from the CSV tables next to them, which were extracted from the sealed study bundles:
+
+```bash
+uv run --no-sync python scripts/make_figures.py
+```
+
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `src/tinymem/memory/` | Stored-state contracts, writers, and readout bridges |
-| `src/tinymem/research/` | Reader integration, training objectives, controlled data, probes, and study protocols |
-| `src/tinymem/evaluation/` | Paired comparisons, bootstrap intervals, and report calculations |
-| `scripts/` | Study runners and Slurm wrappers |
+| `src/tinymem/memory/` | Stored-state contract and the three writers |
+| `src/tinymem/research/` | Reader integration, training objectives, controlled data, probes, study protocols, and report calculations |
+| `src/tinymem/evaluation/` | Fixed reader prompt and exact-match answer scoring |
+| `src/tinymem/data/` | bAbI and WikiText loaders and the reader case contract |
+| `scripts/` | Study runners, `download_data.py`, `make_figures.py`, and Slurm wrappers |
 | `tests/` | Behavioral and end-to-end tests |
-| `results/` | Compact phase-one results and the storage frontier figure |
+| `results/` | Compact result tables (CSV) and the figures drawn from them |
 | `data/manifest.json` | Dataset source and checksum declarations |
 
-The repository retains the earlier from-scratch decoder and memory experiments that phase one was built on.
+The checkout holds only the code that the studies above execute.
+The from-scratch decoder, the explicit token-retention baselines, the readout-bridge studies, and the phase-one independent-fact lineage were removed after phase one closed; they remain in Git history at tag `phase-one-archive`.
+Each sealed study bundle also carries its own copy of the source tree at the time it ran, so sealed results verify against that copy and not against this checkout.
 Datasets, pretrained weights, checkpoints, and full run outputs are excluded from Git.
 
 ## Reproduction scope
