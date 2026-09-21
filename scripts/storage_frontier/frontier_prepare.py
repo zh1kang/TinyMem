@@ -131,16 +131,62 @@ AMENDABLE = frozenset({'frontier_prepare.py', 'frontier_run.py', 'frontier_score
                        'source/src/tinymem/research/storage_frontier_eval.py'})
 
 
-def amend(study: Path, reason: str) -> None:
+# Frozen files whose change invalidates a stage's seal. Fitting stages depend on
+# every file outside AMENDABLE, which an amendment can never change, so their
+# seals stay valid through any chain. frontier_run.py checks only the immediate
+# parent; under a chained amendment its evaluate and transfer stages fail closed.
+STAGE_DEPENDENCIES = {
+    'training': frozenset(),
+    'evaluation': frozenset({'frontier_run.py', 'frontier_score.py',
+                             'source/src/tinymem/research/storage_frontier_eval.py'}),
+    'transfer': frozenset({'frontier_run.py', 'frontier_transfer.py',
+                           'source/src/tinymem/research/storage_frontier_eval.py'}),
+}
+
+
+def lineage(study: Path, protocol: dict) -> list[dict]:
+    """Return the amendment chain, newest first, verifying each archived parent."""
+    chain, current = [], protocol
+    while 'amends' in current:
+        record = current['amends']
+        archived = study / record['parent_protocol_file']
+        if sha(archived) != record['parent_protocol_sha256']:
+            raise ValueError(f'archived parent protocol differs: {archived.name}')
+        chain.append(record)
+        current = json.loads(archived.read_text())
+    return chain
+
+
+def accepted_seal_hashes(study: Path, protocol: dict, stage: str, cell: int) -> frozenset[str]:
+    """Protocol hashes a sealed ``stage/cell`` may carry under ``protocol``.
+
+    An ancestor hash is accepted when no file the stage depends on changed in
+    any later amendment, or when a later amendment records an explicit waiver
+    for this stage and cell under that ancestor.
+    """
+    dependencies = STAGE_DEPENDENCIES[stage]
+    chain = lineage(study, protocol)
+    waived = {w['protocol_sha256'] for record in chain for w in record.get('unaffected_seals', ())
+              if w['stage'] == stage and cell in w['cells']}
+    accepted, changed = {sha(study / 'protocol.json')}, set()
+    for record in chain:
+        changed |= set(record['changed_files'])
+        parent = record['parent_protocol_sha256']
+        if not (changed & dependencies) or parent in waived:
+            accepted.add(parent)
+    return frozenset(accepted)
+
+
+def amend(study: Path, reason: str, unaffected: tuple[dict, ...] = ()) -> None:
     """Re-freeze evaluation code after fitting, without touching any fitted seal.
 
     The parent protocol is renamed, not deleted. The new protocol records what
     changed. Any file that fitting depended on must be byte-identical.
+    ``unaffected`` records seals that stay valid although a file their stage
+    depends on changed, with the reason; the report discloses them.
     """
     path = study / 'protocol.json'
     parent = json.loads(path.read_text())
-    if 'amends' in parent:
-        raise ValueError('amend the original protocol once; do not chain amendments')
     for stage in ('features', 'preflight'):
         if not (study / stage / 'complete.json').exists():
             raise ValueError(f'{stage} must be complete before an evaluation-only amendment')
@@ -155,17 +201,39 @@ def amend(study: Path, reason: str) -> None:
     if changed - AMENDABLE:
         raise ValueError(f'amendment touches fitting-bound files: {sorted(changed - AMENDABLE)}')
     parent_sha = sha(path)
+    known = {parent_sha} | {r['parent_protocol_sha256'] for r in lineage(study, parent)}
+    for waiver in unaffected:
+        if waiver['stage'] not in STAGE_DEPENDENCIES or waiver['protocol_sha256'] not in known:
+            raise ValueError('waiver must name a known stage and an ancestor protocol hash')
+        if not waiver['cells'] or not waiver['reason']:
+            raise ValueError('waiver must name cells and a reason')
+        for cell in waiver['cells']:
+            seal = study / waiver['stage'] / str(cell) / 'complete.json'
+            if not seal.exists() or json.loads(seal.read_text())['protocol_sha256'] != waiver['protocol_sha256']:
+                raise ValueError(f'waiver names {waiver["stage"]}/{cell}, which is not sealed under that hash')
     archived = study / f'protocol.parent.{parent_sha[:12]}.json'
     if archived.exists():
         raise FileExistsError('parent protocol archive already exists')
-    protocol = {**parent, 'files': files,
-                'amends': {'parent_protocol_sha256': parent_sha, 'parent_protocol_file': archived.name,
-                           'changed_files': sorted(changed), 'reason': reason,
-                           'fitting_reused': 'features, preflight, and all training seals carry the parent hash'}}
+    record = {'parent_protocol_sha256': parent_sha, 'parent_protocol_file': archived.name,
+              'changed_files': sorted(changed), 'reason': reason,
+              'fitting_reused': 'features, preflight, and all training seals carry an ancestor hash'}
+    if unaffected:
+        record['unaffected_seals'] = [dict(w) for w in unaffected]
+    protocol = {**parent, 'files': files, 'amends': record}
     path.rename(archived)
     write(path, protocol)
     print(json.dumps({'protocol_sha256': sha(path), 'parent_protocol_sha256': parent_sha,
                       'changed_files': sorted(changed)}), flush=True)
+
+
+def parse_waiver(text: str) -> dict:
+    """``stage:cells:protocol_sha256:reason`` with cells as ``1,2`` or ``9-11``."""
+    stage, cells, digest, reason = text.split(':', 3)
+    parsed = []
+    for part in cells.split(','):
+        first, _, last = part.partition('-')
+        parsed.extend(range(int(first), int(last or first) + 1))
+    return {'stage': stage, 'cells': parsed, 'protocol_sha256': digest, 'reason': reason}
 
 
 if __name__ == '__main__':
@@ -175,6 +243,8 @@ if __name__ == '__main__':
     parser.add_argument('--study', type=Path, required=True)
     parser.add_argument('--repo', type=Path, default=Path.cwd())
     parser.add_argument('--reason')
+    parser.add_argument('--unaffected', action='append', default=[], type=parse_waiver,
+                        help='stage:cells:protocol_sha256:reason for a seal that stays valid')
     args = parser.parse_args()
     if args.stage == 'prepare':
         prepare(args.study, args.repo)
@@ -183,4 +253,4 @@ if __name__ == '__main__':
     else:
         if not args.reason:
             parser.error('amend requires --reason')
-        amend(args.study, args.reason)
+        amend(args.study, args.reason, tuple(args.unaffected))

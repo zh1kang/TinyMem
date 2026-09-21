@@ -12,8 +12,8 @@ import matplotlib
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from frontier_prepare import sha, write
-from frontier_run import checked, sealed_protocol_hashes
+from frontier_prepare import accepted_seal_hashes, lineage, sha, write
+from frontier_run import checked
 
 from tinymem.research.storage_frontier_analysis import analyze
 from tinymem.research.storage_frontier_data import load_questions
@@ -52,13 +52,7 @@ def packed_qa1_reference(study: Path, data: dict) -> dict:
 def complete(study: Path, protocol: dict, stage: str, cell: int) -> Path:
     directory = study / stage / str(cell)
     seal = json.loads((directory / 'complete.json').read_text())
-    # After an evaluation-only amendment, training seals carry the parent hash.
-    # Text-cell evaluations that completed under the parent are also accepted:
-    # the amendment changed only the learned-memory encoder path. Learned-cell
-    # evaluations and every transfer must carry the current hash.
-    parent_ok = stage == 'training' or (stage == 'evaluation' and protocol['cells'][cell]['kind'] == 'text')
-    accepted = sealed_protocol_hashes(study, protocol) if parent_ok else {sha(study / 'protocol.json')}
-    if seal['protocol_sha256'] not in accepted or seal['cell'] != cell:
+    if seal['protocol_sha256'] not in accepted_seal_hashes(study, protocol, stage, cell) or seal['cell'] != cell:
         raise ValueError(f'{stage}/{cell} provenance differs')
     for name, expected in seal['files'].items():
         if sha(directory / name) != expected:
@@ -89,6 +83,7 @@ def report(study: Path) -> None:
         training.append(result)
         evaluated = complete(study, protocol, 'evaluation', cell)
         seals.append({'cell': cell, 'kind': declaration['kind'],
+                      'training_protocol_sha256': json.loads((trained / 'complete.json').read_text())['protocol_sha256'],
                       'evaluation_protocol_sha256': json.loads((evaluated / 'complete.json').read_text())['protocol_sha256']})
         cell_rows = [json.loads(line) for line in (evaluated / 'predictions.jsonl').read_text().splitlines()]
         expected = {}
@@ -127,6 +122,7 @@ def report(study: Path) -> None:
                           'accuracy': sum(v) / len(v)} for (m, l, t), v in control_groups.items()}})
         rows.extend(cell_rows)
         transferred = complete(study, protocol, 'transfer', cell)
+        seals[-1]['transfer_protocol_sha256'] = json.loads((transferred / 'complete.json').read_text())['protocol_sha256']
         transfer_rows = [json.loads(line) for line in (transferred / 'predictions.jsonl').read_text().splitlines()]
         modes = ([('learned', declaration['budget'])] if declaration['kind'] == 'learned' else
                  [(mode, budget) for mode in CODECS for budget in protocol['settings']['budgets']])
@@ -149,7 +145,7 @@ def report(study: Path) -> None:
     result = analyze(rows)
     result.update(protocol_sha256=sha(study / 'protocol.json'), training=training, transfer=transfer, controls=controls,
                   packed_qa1_reference=packed_qa1_reference(study, data), limits=protocol['limits'],
-                  amends=protocol.get('amends'), evaluation_seals=seals)
+                  amendments=lineage(study, protocol), cell_seals=seals)
     write(directory / 'report.json', result)
     fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
     for axis, level, title in zip(axes, (0, 2), ('Clean official tasks', 'With text distractors'), strict=True):
@@ -158,8 +154,9 @@ def report(study: Path) -> None:
                             key=lambda s: s['budget'])
             x = [p['budget'] for p in points]
             mean = [100 * p['correct_accuracy']['mean'] for p in points]
-            lower = [m - 100 * p['correct_accuracy']['min'] for m, p in zip(mean, points)]
-            upper = [100 * p['correct_accuracy']['max'] - m for m, p in zip(mean, points)]
+            # Identical seeds give differences of a few ulp; matplotlib rejects negatives.
+            lower = [max(0.0, m - 100 * p['correct_accuracy']['min']) for m, p in zip(mean, points)]
+            upper = [max(0.0, 100 * p['correct_accuracy']['max'] - m) for m, p in zip(mean, points)]
             axis.errorbar(x, mean, yerr=[lower, upper], marker='o', capsize=3, label=mode.replace('_', ' '))
         axis.set(xscale='log', ylim=(0, 102), title=title, xlabel='Retained payload bytes')
         axis.set_xticks([64, 256, 1024], labels=['64', '256', '1,024'])

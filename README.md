@@ -29,8 +29,16 @@ Negative results are reported with the positive ones.
 5. **The address function is the bottleneck for answer-only learning.**
    Freezing the key branch from a state-supervised writer and training only a fresh value branch from answers raised development recall from 31.8% to 59.0% (paired 95% interval +26.0 to +28.5 points), with retention across unrelated writes rising from 20.6% to 58.5%.
    Six of twelve pairs still failed, and QA1 keeps a 100%-accurate two-byte explicit reference, so this is a narrow mechanism result.
+6. **At equal bytes, answer-trained learned memory lost to every explicit text store, and the reader ignored it.**
+   Across bAbI tasks 1 through 5 at 64, 256, and 1,024 retained bytes, jointly trained int8 slot memory scored 20.7% to 21.7% five-task accuracy in every budget and seed.
+   Zero-memory and other-story controls scored 16.6% to 17.2%, and QA1 and QA2 accuracy was identical to three decimals across all nine cells: the reader learned the answer prior and nothing from the state.
+   Compressed text stores reached 62% to 67% at 64 bytes and 99.3% to 99.7% at 256 bytes; a training-only dictionary store reached 99.7% at 64 bytes.
+   The paired whole-story bootstrap difference against the dictionary store is -78 to -79 points at every budget (95% intervals within -80.3 to -76.7).
+   Under heavy text distractors every method, including the text stores, fell to 21% to 27%, so bounded explicit storage is not a solved problem either.
 
-The one open question is the byte-matched comparison against strong explicit text stores, described under [Storage frontier](#storage-frontier).
+This closes the project's question.
+Learned writers can be made to write correct states when the state is supervised, and the read interface is sound, but end-to-end answer supervision under a byte budget did not produce a memory the reader used, let alone one that beat compact explicit storage.
+Details are under [Storage frontier](#storage-frontier).
 
 ## Architecture
 
@@ -90,17 +98,36 @@ The arms share a reader, data order, and evaluation panel, so they are not six i
 
 ### Storage frontier
 
-This is the closing study and it is running.
-Nine learned cells (three budgets of 64, 256, and 1,024 bytes, three seeds) and three text-store cells are trained jointly from answer tokens on official bAbI tasks 1 through 5 with WikiText-2 distractors.
-Every write quantizes to int8; the retained state has no flags, scales, or buffers.
-Explicit baselines are compressed recent text, compressed diverse text, and a training-only dictionary log, each capped at the same byte budgets.
-Evaluation scores all 5,000 official test questions in clean and heavy-distractor variants, with zero-memory and other-story controls, then transfers to all 500 installed BABILong 1k examples as raw text.
+The closing study asks: at equal retained bytes per history, can answer-trained recurrent memory retain and update facts as well as strong explicit text stores?
+Nine learned cells (budgets of 64, 256, and 1,024 bytes, three seeds) and three text-store cells were trained jointly from answer tokens on official bAbI tasks 1 through 5 with WikiText-2 distractors, for three epochs and 16,875 optimizer steps each.
+Each record is encoded by the unadapted frozen Qwen base and written by token cross-attention into learned slots; every write quantizes to int8 and the retained state has no flags, scales, or buffers.
+Explicit baselines are compressed recent text, compressed text selected for lexical diversity, and a training-only dictionary log (152,830 shared dictionary bytes, reported separately), each capped at the same budgets.
+Evaluation scored all 5,000 official test questions in clean and heavy-distractor variants from the fixed final checkpoint, with zero-memory and other-story controls, then transferred to all 500 installed BABILong 1k examples as raw text.
 
-All twelve training cells completed.
-The first evaluation array stopped on the nine learned cells because PEFT re-enabled adapter gradients when its `disable_adapter` context exited, and the frozen-reader check in `generate` refused to continue.
-The fix restores the frozen adapted reader after the base encoder runs.
-The protocol was amended for evaluation code only; the fitted seals are reused and the amendment rejects any change to fitting-bound files.
-Results will be reported here from the sealed final report with all cells, controls, and the two-byte QA1 explicit reference.
+![Accuracy by retained bytes](results/storage_frontier.png)
+
+| Method | 64 B | 256 B | 1,024 B |
+|---|---:|---:|---:|
+| Learned int8 slots | 21.0 (20.9-21.0) | 20.7 (20.6-20.9) | 21.7 (21.0-22.5) |
+| Compressed recent text | 67.0 (66.8-67.3) | 99.7 (99.6-99.8) | 99.7 (99.7-99.8) |
+| Compressed diverse text | 62.3 (62.2-62.5) | 99.3 | 99.7 (99.7-99.8) |
+| Dictionary recent text | 99.7 (99.6-99.8) | 99.7 (99.7-99.8) | 99.7 (99.7-99.8) |
+
+Five-task mean exact-match accuracy in percent on clean official test questions; parentheses give the range across three seeds.
+Zero-memory controls averaged 17.2% and other-story controls 16.6% for the learned cells.
+Full text scored 99.6% to 99.8%, and the hand-written two-byte QA1 state scored 100%.
+Learned-cell training cross-entropy plateaued at 0.65 against 0.18 for the text readers.
+On BABILong 1k transfer, learned memory scored 19.7% to 20.6% at every budget, while compressed recent text reached 34.5%, 50.1%, and 88.4% at the three budgets.
+
+Under heavy distractors, where four WikiText records follow each fact and sixteen more precede the question, every method fell to 20.6% to 26.6%.
+The text stores lose the facts to distractor text under the byte cap; the learned memory had nothing to lose.
+
+Execution notes.
+All twelve training cells completed under the original protocol.
+The first evaluation array stopped on the nine learned cells because PEFT re-enabled adapter gradients when its `disable_adapter` context exited and the frozen-reader check in `generate` refused to continue; the fix restores the frozen adapted reader after the base encoder runs.
+The first report attempt wrote the analysis and then failed on a figure with error bars a few ulp below zero.
+Both fixes were applied as recorded, evaluation-only protocol amendments that reuse the fitted seals and refuse changes to fitting-bound files.
+The sealed report lists the amendment chain, the protocol hash each cell's seal carries, and the one recorded waiver (text-cell evaluations that completed under the original protocol through an unchanged code path).
 
 ## Setup and tests
 
@@ -123,7 +150,7 @@ They check contracts and execution paths; they do not measure full-size model ac
 | `src/tinymem/evaluation/` | Paired comparisons, bootstrap intervals, and report calculations |
 | `scripts/` | Study runners and Slurm wrappers |
 | `tests/` | Behavioral and end-to-end tests |
-| `results/` | Compact phase-one results |
+| `results/` | Compact phase-one results and the storage frontier figure |
 | `data/manifest.json` | Dataset source and checksum declarations |
 
 The repository retains the earlier from-scratch decoder and memory experiments that phase one was built on.

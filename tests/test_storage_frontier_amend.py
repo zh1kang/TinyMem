@@ -8,7 +8,16 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts' / 'storage_frontier'
 sys.path.insert(0, str(SCRIPTS))
 
-from frontier_prepare import AMENDABLE, amend, frozen_files, sha, write
+from frontier_prepare import (
+    AMENDABLE,
+    accepted_seal_hashes,
+    amend,
+    frozen_files,
+    lineage,
+    parse_waiver,
+    sha,
+    write,
+)
 from frontier_report import complete
 from frontier_run import FITTING_STAGES, sealed_protocol_hashes
 
@@ -82,42 +91,88 @@ def test_amend_requires_complete_fitting_and_a_real_change(tmp_path):
         amend(unfitted, 'no')
 
 
-def test_amend_is_not_chained(tmp_path):
-    study = _study(tmp_path)
-    (study / 'frontier_score.py').write_text('# fixed\n')
-    amend(study, 'first')
-    (study / 'frontier_score.py').write_text('# fixed again\n')
-    with pytest.raises(ValueError, match='once'):
-        amend(study, 'second')
-
-
 def _seal(study: Path, stage: str, cell: int, protocol_sha: str) -> None:
     (study / stage / str(cell)).mkdir(parents=True, exist_ok=True)
     write(study / stage / str(cell) / 'complete.json',
           {'protocol_sha256': protocol_sha, 'cell': cell, 'files': {}})
 
 
-def test_report_accepts_parent_seals_only_for_training_and_text_evaluation(tmp_path):
+def _protocol(study: Path) -> dict:
+    return json.loads((study / 'protocol.json').read_text())
+
+
+def test_seal_acceptance_follows_stage_dependencies_through_a_chain(tmp_path):
     study = _study(tmp_path, cells=2)
-    parent = sha(study / 'protocol.json')
+    original = sha(study / 'protocol.json')
+    (study / 'frontier_score.py').write_text('# fixed\n')
+    amend(study, 'evaluation fix')
+    first = sha(study / 'protocol.json')
+    _seal(study, 'evaluation', 0, first)
+    _seal(study, 'evaluation', 1, original)
+    _seal(study, 'transfer', 0, first)
+    protocol = _protocol(study)
+    # frontier_score.py changed: evaluation seals under the original are stale,
+    # transfer and training seals are not.
+    assert accepted_seal_hashes(study, protocol, 'training', 0) == {first, original}
+    assert accepted_seal_hashes(study, protocol, 'transfer', 0) == {first, original}
+    assert accepted_seal_hashes(study, protocol, 'evaluation', 0) == {first}
+    assert complete(study, protocol, 'evaluation', 0).name == '0'
+    with pytest.raises(ValueError, match='evaluation/1 provenance'):
+        complete(study, protocol, 'evaluation', 1)
+    # A second, report-only amendment keeps every evaluation and transfer seal.
+    (study / 'frontier_report.py').write_text('# clamp\n')
+    amend(study, 'figure fix')
+    second = sha(study / 'protocol.json')
+    protocol = _protocol(study)
+    assert [r['changed_files'] for r in lineage(study, protocol)] == [['frontier_report.py'], ['frontier_score.py']]
+    assert accepted_seal_hashes(study, protocol, 'evaluation', 0) == {second, first}
+    assert accepted_seal_hashes(study, protocol, 'transfer', 0) == {second, first, original}
+    assert accepted_seal_hashes(study, protocol, 'training', 1) == {second, first, original}
+    assert complete(study, protocol, 'evaluation', 0).name == '0'
+    assert complete(study, protocol, 'transfer', 0).name == '0'
+    assert complete(study, protocol, 'training', 1).name == '1'
+
+
+def test_lineage_rejects_a_tampered_archived_parent(tmp_path):
+    study = _study(tmp_path)
     (study / 'frontier_score.py').write_text('# fixed\n')
     amend(study, 'fix')
-    protocol = json.loads((study / 'protocol.json').read_text())
-    current = sha(study / 'protocol.json')
-    learned, text = 0, 1
-    _seal(study, 'evaluation', text, parent)
-    _seal(study, 'evaluation', learned, parent)
-    _seal(study, 'transfer', text, parent)
-    assert complete(study, protocol, 'training', learned).name == '0'
-    assert complete(study, protocol, 'evaluation', text).name == '1'
-    with pytest.raises(ValueError, match='evaluation/0 provenance'):
-        complete(study, protocol, 'evaluation', learned)
-    with pytest.raises(ValueError, match='transfer/1 provenance'):
-        complete(study, protocol, 'transfer', text)
-    _seal(study, 'evaluation', learned, current)
-    _seal(study, 'transfer', text, current)
-    assert complete(study, protocol, 'evaluation', learned).name == '0'
-    assert complete(study, protocol, 'transfer', text).name == '1'
+    protocol = _protocol(study)
+    archived = study / protocol['amends']['parent_protocol_file']
+    archived.write_text(archived.read_text() + '\n')
+    with pytest.raises(ValueError, match='archived parent protocol differs'):
+        lineage(study, protocol)
+
+
+def test_waiver_keeps_a_named_seal_valid_and_is_verified(tmp_path):
+    study = _study(tmp_path, cells=2)
+    original = sha(study / 'protocol.json')
+    (study / 'frontier_score.py').write_text('# fixed\n')
+    amend(study, 'first')
+    first = sha(study / 'protocol.json')
+    _seal(study, 'evaluation', 1, original)
+    _seal(study, 'evaluation', 0, first)
+    (study / 'frontier_report.py').write_text('# clamp\n')
+    waiver = {'stage': 'evaluation', 'cells': [1], 'protocol_sha256': original,
+              'reason': 'text cells never use the changed encoder path'}
+    with pytest.raises(ValueError, match='not sealed under that hash'):
+        amend(study, 'second', ({**waiver, 'cells': [0]},))
+    with pytest.raises(ValueError, match='known stage'):
+        amend(study, 'second', ({**waiver, 'stage': 'report'},))
+    with pytest.raises(ValueError, match='known stage'):
+        amend(study, 'second', ({**waiver, 'protocol_sha256': 'f' * 64},))
+    amend(study, 'second', (waiver,))
+    protocol = _protocol(study)
+    assert protocol['amends']['unaffected_seals'] == [waiver]
+    assert original in accepted_seal_hashes(study, protocol, 'evaluation', 1)
+    assert original not in accepted_seal_hashes(study, protocol, 'evaluation', 0)
+    assert complete(study, protocol, 'evaluation', 1).name == '1'
+
+
+def test_parse_waiver_expands_ranges():
+    parsed = parse_waiver('evaluation:9-11,3:abc:text cells: unchanged path')
+    assert parsed == {'stage': 'evaluation', 'cells': [9, 10, 11, 3], 'protocol_sha256': 'abc',
+                      'reason': 'text cells: unchanged path'}
 
 
 def test_unamended_protocol_accepts_only_its_own_hash(tmp_path):
