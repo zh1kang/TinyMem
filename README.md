@@ -51,7 +51,7 @@ Three writer families were tested.
 
 | Writer | Update | Bytes tested | Module |
 |---|---|---|---|
-| Gated slots | `next = old + sigmoid(gate) * (tanh(candidate) - old)` | 66 | [query_pool_slots.py](src/tinymem/memory/query_pool_slots.py) |
+| Gated slots | `next = old + sigmoid(gate) * (tanh(candidate) - old)` | 66 | [gated_slots.py](src/tinymem/memory/gated_slots.py) |
 | Delta rule | `next = state + outer(key, beta * (value - key @ state))` | 66, 258 | [delta_slots.py](src/tinymem/memory/delta_slots.py) |
 | Quantized attention slots | token cross-attention, slot self-attention, gated residual, int8 every write | 64, 256, 1,024 | [quantized_slots.py](src/tinymem/memory/quantized_slots.py) |
 
@@ -64,17 +64,18 @@ Reads never modify the state, and no raw history or KV cache bypasses it.
 Each study has a runner that prepares a sealed bundle, trains every declared cell, seals, evaluates, and reports.
 Stages refuse to run if any hashed input, source file, or runtime differs from the seal.
 
-| Study | Question | Runner | Cluster wrapper |
-|---|---|---|---|
-| Phase one | Can a gated writer preserve unmentioned facts through truthful repetition? | `independent_fact_recurrent_training.py` at tag `phase-one-archive` | archived |
-| Delta comparison | Do residual updates with learned addresses retain better than gating? | [run_delta_fact_study.py](scripts/run_delta_fact_study.py) | [della_delta_fact.slurm](scripts/della_delta_fact.slurm) |
-| Correct-state readout | Can the read interface use a correct query-independent state? | [run_oracle_fact_study.py](scripts/run_oracle_fact_study.py) | [della_oracle_fact.slurm](scripts/della_oracle_fact.slurm) |
-| Learned writer | Can a writer learn correct states, and why does it collapse? | [run_distilled_fact_study.py](scripts/run_distilled_fact_study.py) | [CPU](scripts/della_distilled_fact_cpu.slurm), [GPU](scripts/della_distilled_fact_gpu.slurm) |
-| QA1 readout | Does the read interface transfer to an official benchmark? | [run_babi_memory_readout.py](scripts/run_babi_memory_readout.py) | [della_babi_memory_readout.slurm](scripts/della_babi_memory_readout.slurm) |
-| Storage frontier | At equal bytes, does answer-trained memory match strong text stores? | [scripts/storage_frontier/](scripts/storage_frontier/) | [GPU](scripts/storage_frontier/frontier_gpu.slurm), [CPU](scripts/storage_frontier/frontier_cpu.slurm) |
+| Study | Question | Runner | Package | Cells |
+|---|---|---|---|---|
+| Phase one | Can a gated writer preserve unmentioned facts through truthful repetition? | tag `phase-one-archive` | archived | - |
+| Delta comparison | Do residual updates with learned addresses retain better than gating? | [run_delta_study.py](scripts/run_delta_study.py) | `studies/delta` | 3 seeds x 2 widths x 2 writers |
+| Correct-state readout | Can the read interface use a correct query-independent state? | [run_oracle_study.py](scripts/run_oracle_study.py) | `studies/oracle` | 3 readers |
+| Learned writer | Can a writer learn correct states, and why does it collapse? | [run_distilled_study.py](scripts/run_distilled_study.py) | `studies/distilled` | 3 or 12 writers |
+| QA1 readout | Does the read interface transfer to an official benchmark? | [run_qa1_study.py](scripts/run_qa1_study.py) | `studies/qa1` | 3 readers |
+| Storage frontier | At equal bytes, does answer-trained memory match strong text stores? | [scripts/frontier/](scripts/frontier/) | `studies/frontier` | 9 learned + 3 text |
 
 The distilled runner takes `--fixed-beta 0.75`, `--normalize-hidden`, and `--replicate` to select the gate patch, the normalization patch, and the 12-seed panel.
 Every runner supports a separate `prepare --smoke` bundle whose results never enter a scientific comparison.
+[Running a study](#running-a-study) gives the commands.
 
 ### Phase one results
 
@@ -152,13 +153,14 @@ The sealed report lists the amendment chain, the protocol hash each cell's seal 
 
 ## Setup and tests
 
-Use Python 3.11 or newer.
+Use Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync --locked --python 3.11 --extra dev --extra research
 uv run --no-sync python -m pytest
 ```
 
+The suite has 326 tests and runs on CPU in about 90 seconds.
 Tests use small tensors, synthetic inputs, and tiny randomly initialized readers.
 They check contracts and execution paths; they do not measure full-size model accuracy.
 
@@ -168,15 +170,102 @@ The figures in `results/` are drawn from the CSV tables next to them, which were
 uv run --no-sync python scripts/make_figures.py
 ```
 
+## Data and model
+
+No dataset, parsed benchmark file, or model weight is tracked in Git.
+Two scripts download and verify everything the studies read; the loaders in `src/tinymem/data/` and `src/tinymem/studies/*/data.py` parse the raw files on demand.
+
+```bash
+uv run --no-sync python scripts/download_data.py    # bAbI (en-10k), BABILong qa1-qa5 at 1k-8k, WikiText-2 raw
+uv run --no-sync python scripts/download_model.py   # Qwen3-1.7B at the pinned revision, with Hub hashes
+```
+
+Both scripts write under `data/raw/`, which is ignored by Git, and check every file against the sizes and hashes recorded in [data/manifest.json](data/manifest.json) or on the Hub.
+The model download is about 4 GB.
+Dataset licenses and model terms apply separately from this repository.
+
+## Running a study
+
+Each runner works on one study directory and moves through fixed stages.
+`prepare` builds the data, copies the source tree, and writes `protocol.json`; every later stage re-hashes the protocol and refuses to run on a changed input, source file, or runtime.
+Cells are addressed by `--cell N`; a stage that has already produced a cell directory refuses to overwrite it.
+
+Run from the repository root with `MODEL=data/raw/pretrained/qwen3-1.7b`.
+
+```bash
+# Delta comparison (12 cells) and correct-state readout (3 cells)
+uv run --no-sync python scripts/run_delta_study.py prepare --output artifacts/delta --snapshot $MODEL --device cuda
+uv run --no-sync python scripts/run_delta_study.py train --study artifacts/delta --snapshot $MODEL --cell 0   # ... 11
+uv run --no-sync python scripts/run_delta_study.py seal --study artifacts/delta
+uv run --no-sync python scripts/run_delta_study.py reference --study artifacts/delta --snapshot $MODEL
+uv run --no-sync python scripts/run_delta_study.py evaluate --study artifacts/delta --snapshot $MODEL --cell 0
+uv run --no-sync python scripts/run_delta_study.py report --study artifacts/delta
+# run_oracle_study.py has the same stages without reference.
+
+# Learned writer: features on GPU, writer fitting on CPU, scoring with the oracle readers on GPU
+uv run --no-sync python scripts/run_distilled_study.py prepare --output artifacts/distilled --parent artifacts/oracle \
+    --snapshot $MODEL --device cuda --normalize-hidden --replicate
+uv run --no-sync python scripts/run_distilled_study.py features --study artifacts/distilled --snapshot $MODEL
+uv run --no-sync python scripts/run_distilled_study.py train --study artifacts/distilled --cell 0            # ... 11
+uv run --no-sync python scripts/run_distilled_study.py seal --study artifacts/distilled
+uv run --no-sync python scripts/run_distilled_study.py evaluate --study artifacts/distilled --snapshot $MODEL --cell 0
+uv run --no-sync python scripts/run_distilled_study.py report --study artifacts/distilled
+
+# QA1 readout (3 cells)
+uv run --no-sync python scripts/run_qa1_study.py prepare --output artifacts/qa1 --snapshot $MODEL \
+    --training-file data/raw/tasks_1-20_v1-2/en-10k/qa1_single-supporting-fact_train.txt
+uv run --no-sync python scripts/run_qa1_study.py train --study artifacts/qa1 --snapshot $MODEL --cell 0
+uv run --no-sync python scripts/run_qa1_study.py evaluate --study artifacts/qa1 --snapshot $MODEL --cell 0
+uv run --no-sync python scripts/run_qa1_study.py report --study artifacts/qa1
+
+# Storage frontier (12 cells); stages after prepare run inside the study directory
+uv run --no-sync python scripts/frontier/frontier_prepare.py prepare --study artifacts/frontier
+uv run --no-sync python scripts/frontier/frontier_prepare.py freeze --study artifacts/frontier
+cd artifacts/frontier && export PYTHONPATH=$PWD/source/src
+python frontier_run.py features --study . --model ../../$MODEL
+python frontier_run.py preflight --study . --model ../../$MODEL
+python frontier_run.py train --study . --model ../../$MODEL --cell 0       # ... 11
+python frontier_run.py evaluate --study . --model ../../$MODEL --cell 0
+python frontier_run.py transfer --study . --model ../../$MODEL --cell 0
+python frontier_report.py --study .
+```
+
+Add `--smoke` to the delta, oracle, or distilled `prepare` to get a bundle with one cell and a few steps that exercises the code path end to end.
+Full cells were run on a CUDA GPU with 40 GB of memory and BF16 support (Ampere or newer); the distilled writer fits run on CPU.
+Runtime and hardware are recorded in each cell's seal, and a cell refuses to score under a different runtime than the one it was trained with.
+
+### Slurm
+
+[scripts/slurm/gpu.slurm](scripts/slurm/gpu.slurm) and [scripts/slurm/cpu.slurm](scripts/slurm/cpu.slurm) wrap any runner stage in one job and pass the array index as `--cell`.
+They carry no site names; give partition, account, or GPU constraints on the `sbatch` line, and set `TINYMEM_ENV` to a file that activates your Python environment if it is not the repository `.venv`.
+
+```bash
+sbatch scripts/slurm/gpu.slurm scripts/run_delta_study.py prepare --output artifacts/delta --snapshot $MODEL --device cuda
+sbatch --array=0-11 scripts/slurm/gpu.slurm scripts/run_delta_study.py train --study artifacts/delta --snapshot $MODEL
+sbatch --dependency=afterok:<train job> scripts/slurm/cpu.slurm scripts/run_delta_study.py seal --study artifacts/delta
+sbatch --array=0-11 scripts/slurm/cpu.slurm scripts/run_distilled_study.py train --study artifacts/distilled
+```
+
+The frontier study copies [frontier_gpu.slurm](scripts/frontier/frontier_gpu.slurm) and [frontier_cpu.slurm](scripts/frontier/frontier_cpu.slurm) into the study directory at `prepare` and hashes them with the protocol.
+Submit them from inside the study directory with `TINYMEM_ENV` and `TINYMEM_MODEL` set:
+
+```bash
+cd artifacts/frontier
+export TINYMEM_ENV=/path/to/.venv/bin/activate TINYMEM_MODEL=/path/to/qwen3-1.7b
+sbatch frontier_gpu.slurm features
+sbatch --array=0-11 frontier_gpu.slurm train
+sbatch frontier_cpu.slurm
+```
+
 ## Repository layout
 
 | Path | Contents |
 |---|---|
 | `src/tinymem/memory/` | Stored-state contract and the three writers |
-| `src/tinymem/research/` | Reader integration, training objectives, controlled data, probes, study protocols, and report calculations |
-| `src/tinymem/evaluation/` | Fixed reader prompt and exact-match answer scoring |
-| `src/tinymem/data/` | bAbI and WikiText loaders and the reader case contract |
-| `scripts/` | Study runners, `download_data.py`, `make_figures.py`, and Slurm wrappers |
+| `src/tinymem/reader/` | Frozen Qwen loader and verifier, prefix reader, LoRA adaptation, fixed prompt, and exact-match scoring |
+| `src/tinymem/data/` | bAbI and WikiText parsers and the reader case contract |
+| `src/tinymem/studies/` | One package per study (`delta`, `oracle`, `distilled`, `qa1`, `frontier`): data, protocol, fitting, scoring, and report code; shared `runtime.py` and `artifacts.py` |
+| `scripts/` | Study runners, `download_data.py`, `download_model.py`, `make_figures.py`, `profile_training.py`, and Slurm templates |
 | `tests/` | Behavioral and end-to-end tests |
 | `results/` | Compact result tables (CSV) and the figures drawn from them |
 | `data/manifest.json` | Dataset source and checksum declarations |
@@ -188,7 +277,7 @@ Datasets, pretrained weights, checkpoints, and full run outputs are excluded fro
 
 ## Reproduction scope
 
-The public checkout supports the implementations and tests above.
-Full-size runs require their original sealed bundles, the pinned Qwen3-1.7B snapshot, and site-specific cluster settings.
+The code above reruns every study from public data and the pinned model.
+Exact numbers depend on the recorded runtime: PyTorch, Transformers, and PEFT versions from `uv.lock`, BF16 CUDA kernels on an Ampere-class GPU, deterministic algorithms, and TF32 disabled.
+A rerun on other hardware is a replication, not a verification of the sealed bundles, and the seals will say so.
 Do not bypass hash checks or substitute this checkout for a frozen execution snapshot.
-Dataset licenses and model terms apply separately from this repository.

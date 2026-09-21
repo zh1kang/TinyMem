@@ -4,7 +4,7 @@ import re
 import pytest
 import torch
 
-from tinymem.research.pretrained import PretrainedReader
+from tinymem.reader.pretrained import PretrainedReader
 
 
 class WordTokenizer:
