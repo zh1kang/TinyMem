@@ -11,7 +11,7 @@ from tinymem.memory.query_pool_slots import QueryPoolSlotWriter
 from tinymem.research.delta_fact_readout import SlotReadout
 from tinymem.research.prefix_reader import prefix_answer_losses
 from tinymem.research.pretrained import PretrainedReader
-from tinymem.research.readout_runner import ReadoutQuery
+from tinymem.research.adapted_readout import ReadoutQuery
 
 
 Writer = QueryPoolSlotWriter | DeltaSlotWriter

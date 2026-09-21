@@ -4,7 +4,7 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-pytest_plugins = ["test_distilled_fact_protocol", "test_readout_runner"]
+pytest_plugins = ["test_distilled_fact_protocol"]
 
 from tinymem.memory.delta_slots import DeltaSlotWriter
 from tinymem.research.delta_fact_data import build_dataset

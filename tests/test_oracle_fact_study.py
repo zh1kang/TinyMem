@@ -6,8 +6,7 @@ import pytest
 import torch
 from safetensors.torch import load_file
 
-from test_readout_runner import tiny_reader
-from test_update_runner import WordTokenizer
+from conftest import WordTokenizer
 from tinymem.research.delta_fact_protocol import read_dataset
 from tinymem.research.oracle_fact_fit import checkpoint_tensors, load_trained, train_cell
 from tinymem.research.oracle_fact_protocol import (

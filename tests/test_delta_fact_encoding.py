@@ -1,7 +1,6 @@
 import torch
 import pytest
 
-from test_readout_runner import tiny_reader
 from tinymem.memory.delta_slots import DeltaSlotWriter
 from tinymem.research.adapted_readout import frozen_history_features
 from tinymem.research.delta_fact_data import ROOM_PAIRS, build_dataset, replay

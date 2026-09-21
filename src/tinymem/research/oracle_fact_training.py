@@ -21,7 +21,7 @@ from tinymem.research.oracle_fact_state import (
 )
 from tinymem.research.prefix_reader import prefix_answer_losses
 from tinymem.research.pretrained import PretrainedReader
-from tinymem.research.readout_runner import ReadoutQuery
+from tinymem.research.adapted_readout import ReadoutQuery
 
 
 @dataclass(frozen=True)

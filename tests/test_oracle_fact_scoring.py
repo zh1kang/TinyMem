@@ -7,8 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from test_readout_runner import tiny_reader
-from test_update_runner import WordTokenizer
+from conftest import WordTokenizer
 from tinymem.research.delta_fact_protocol import cell_identity, read_dataset, seal_directory
 from tinymem.research.delta_fact_profile import file_hash
 from tinymem.research.oracle_fact_fit import train_cell

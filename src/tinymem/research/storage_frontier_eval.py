@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 import torch
 
-from tinymem.evaluation.longmemeval import normalized_answer
+from tinymem.evaluation.reader_gate import normalized_answer
 from tinymem.research.adapted_readout import configure_read_adapter
 from tinymem.research.prefix_reader import _check_ids
 from tinymem.research.pretrained import PretrainedReader

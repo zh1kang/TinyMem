@@ -1,13 +1,20 @@
-"""Separate read-side adaptation from fixed history features and closed studies."""
+"""Fixed history features and the single read-side LoRA adapter contract."""
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import torch
 from torch import nn
 
-from tinymem.memory.readout_interface import OneShotEncoder, ReadoutBridge, STATE_BYTES
-from tinymem.research.prefix_reader import prefix_answer_loss
 from tinymem.research.pretrained import PretrainedReader
-from tinymem.research.readout_runner import ReadoutQuery
+
+
+@dataclass(frozen=True)
+class ReadoutQuery:
+    case_id: str
+    category: str
+    answer: str
+    after_ids: tuple[int, ...]
+    answer_ids: tuple[int, ...]
 
 
 @torch.no_grad()
@@ -65,63 +72,3 @@ def configure_read_adapter(reader: PretrainedReader, *, trainable: bool) -> tupl
     # Keep dropout disabled in both arms; gradients do not require training mode.
     reader.model.eval()
     return selected
-
-
-def train_adapted_step(
-    reader: PretrainedReader, encoder: OneShotEncoder, bridge: ReadoutBridge,
-    hidden: torch.Tensor, before_ids: tuple[int, ...], queries: Sequence[ReadoutQuery],
-    optimizer: torch.optim.Optimizer, *, adapter_parameters: tuple[nn.Parameter, ...],
-) -> dict[str, float | int]:
-    """One fixed-feature write and mean answer CE; optimize only declared owners."""
-    if any(m.training for m in reader.model.modules()):
-        raise ValueError("read-side model must be in evaluation mode")
-    reader_owned = {id(p) for p in adapter_parameters}
-    if len(reader_owned) != len(adapter_parameters) or reader_owned != {
-        id(p) for p in reader.model.parameters() if p.requires_grad
-    }:
-        raise ValueError("reader adapter ownership changed")
-    parameters = list(encoder.parameters()) + list(bridge.parameters()) + list(adapter_parameters)
-    owned = {id(p) for p in parameters}
-    optimized = [p for group in optimizer.param_groups for p in group['params']]
-    if (len(owned) != len(parameters) or len(optimized) != len(owned)
-            or {id(p) for p in optimized} != owned or any(not p.requires_grad for p in parameters)):
-        raise ValueError("optimizer must own exactly encoder, bridge, and declared read adapter")
-    if (hidden.ndim != 2 or hidden.shape[0] == 0 or hidden.shape[1] != encoder.reader_width
-            or hidden.dtype != torch.float32 or hidden.device.type != 'cpu' or hidden.requires_grad):
-        raise ValueError("expected detached CPU FP32 history features")
-    if not queries:
-        raise ValueError("queries are required")
-    if any(p.grad is not None for p in reader.model.parameters() if id(p) not in reader_owned):
-        raise ValueError("frozen reader has unexpected gradients")
-    optimizer.zero_grad(set_to_none=True)
-    device = reader.model.device
-    features = hidden.to(device).unsqueeze(0)
-    state = encoder(features, torch.ones(features.shape[:2], device=device, dtype=torch.bool))
-    memory = bridge(state)
-    before = torch.tensor(before_ids, device=device)
-    loss = torch.stack([
-        prefix_answer_loss(reader, before, memory, torch.tensor(q.after_ids, device=device),
-                           torch.tensor(q.answer_ids, device=device)) for q in queries
-    ]).mean()
-    if not torch.isfinite(loss):
-        raise ValueError("nonfinite answer loss")
-    loss.backward()
-    if any(p.grad is None for p in parameters):
-        raise ValueError("all declared parameters must receive gradients")
-    if any(p.grad is not None for p in reader.model.parameters() if id(p) not in reader_owned):
-        raise ValueError("frozen reader gradient ownership violation")
-    gradient_norms = {}
-    for name, group in (('encoder', tuple(encoder.parameters())),
-                        ('bridge', tuple(bridge.parameters())), ('adapter', adapter_parameters)):
-        value = torch.stack([p.grad.float().square().sum() for p in group]).sum().sqrt() if group else loss.new_zeros(())
-        if group and (not torch.isfinite(value) or value <= 0):
-            raise ValueError(f"{name} must receive finite nonzero gradients")
-        gradient_norms[name + '_gradient_norm'] = float(value)
-    norm = torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=True)
-    result = {'answer_ce': float(loss.detach()), 'gradient_norm': float(norm),
-              'persistent_bytes': STATE_BYTES, 'write_states': 1,
-              'supervised_tokens': sum(len(q.answer_ids) for q in queries), **gradient_norms}
-    optimizer.step()
-    if any(not torch.isfinite(p).all() for p in parameters):
-        raise ValueError("optimizer produced nonfinite parameters")
-    return result

@@ -5,7 +5,7 @@ import pytest
 
 from tinymem.data.reader_gate import ReaderCase
 from tinymem.evaluation.reader_gate import reader_messages
-from tinymem.research.memory_prompt import encode_history_chunks, encode_memory_example
+from tinymem.research.memory_prompt import encode_memory_example
 from tinymem.research.pretrained import PretrainedReader
 
 
@@ -85,26 +85,3 @@ def test_history_can_exceed_reader_context_but_query_cannot(reader):
                       "Where is Mary?", "kitchen")
     encoded = encode_memory_example(reader, case)
     assert len(encoded.history_ids) > reader.model.config.max_position_embeddings
-
-
-def test_explicit_chunks_preserve_full_native_history(reader):
-    chunks = ("Mary moved to the kitchen.", "John went to the garden.\nMary moved to the office.")
-    case = ReaderCase("id", "babi_qa1", "history", "\n".join(chunks), "Where is Mary?", "office")
-    encoded = encode_history_chunks(reader, case, chunks)
-    assert len(encoded) == 2
-    assert tuple(token for chunk in encoded for token in chunk) == encode_memory_example(reader, case).history_ids
-    assert encoded[-1][-1] == 1001
-
-
-@pytest.mark.parametrize("chunks", [(), ("",), "abc", ("wrong context",), (123,)])
-def test_invalid_history_chunks(reader, chunks):
-    case = ReaderCase("id", "babi_qa1", "history", "Mary moved to the kitchen.", "Where is Mary?", "kitchen")
-    with pytest.raises(ValueError):
-        encode_history_chunks(reader, case, chunks)
-
-
-def test_chunk_boundary_merge_is_rejected(reader):
-    chunks = ("Mary moved to the kitchen.", "\nJohn went to the garden.")
-    case = ReaderCase("id", "babi_qa1", "history", "\n".join(chunks), "Where is Mary?", "kitchen")
-    with pytest.raises(ValueError, match="merges across"):
-        encode_history_chunks(reader, case, chunks)

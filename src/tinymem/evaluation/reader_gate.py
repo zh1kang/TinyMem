@@ -1,13 +1,14 @@
-"""Fixed prompts and strict visible-evidence competence criteria."""
+"""Fixed reader prompts and exact-match answer scoring."""
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 
 from tinymem.data.reader_gate import ReaderCase
-from tinymem.evaluation.longmemeval import normalized_answer
 
+_TOKEN_PATTERN = re.compile(r"\w+", flags=re.UNICODE)
 
 READER_SYSTEM_PROMPT = (
     "Answer the question using only the supplied facts. "
@@ -26,6 +27,13 @@ def reader_messages(case: ReaderCase, *, condition: str) -> list[dict[str, str]]
         {"role": "system", "content": READER_SYSTEM_PROMPT},
         {"role": "user", "content": f"Facts:\n{context}\n\nQuestion: {case.question}"},
     ]
+
+
+def normalized_answer(text: str) -> str:
+    """Return a stable lowercase alphanumeric answer form."""
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    return " ".join(_TOKEN_PATTERN.findall(text.casefold()))
 
 
 def reader_exact_match(prediction: str, answer: str, category: str) -> bool:

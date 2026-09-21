@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 from tinymem.data.reader_gate import ReaderCase
@@ -56,20 +55,3 @@ def encode_memory_example(reader: PretrainedReader, case: ReaderCase) -> NativeM
     if len(before_ids) + len(after_ids) + len(answer_ids) > reader.model.config.max_position_embeddings:
         raise ValueError("query envelope and answer exceed reader context before memory is added")
     return NativeMemoryExample(case.case_id, before_ids, history_ids, after_ids, answer_ids)
-
-
-def encode_history_chunks(
-    reader: PretrainedReader, case: ReaderCase, chunks: Sequence[str],
-) -> tuple[tuple[int, ...], ...]:
-    """Preserve declared line boundaries without changing native history tokens."""
-    if isinstance(chunks, str) or not chunks or any(not isinstance(chunk, str) or not chunk for chunk in chunks):
-        raise ValueError("chunks must be a nonempty sequence of nonempty strings")
-    if "\n".join(chunks) != case.context:
-        raise ValueError("chunks must reconstruct the exact source context")
-    encoded = tuple(tuple(reader.tokenizer.encode(
-        chunk + ("\n\n" if index == len(chunks) - 1 else "\n"), add_special_tokens=False,
-    )) for index, chunk in enumerate(chunks))
-    expected = tuple(reader.tokenizer.encode(case.context + "\n\n", add_special_tokens=False))
-    if any(not chunk for chunk in encoded) or tuple(token for chunk in encoded for token in chunk) != expected:
-        raise ValueError("tokenizer merges across a declared history chunk boundary")
-    return encoded

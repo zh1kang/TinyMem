@@ -3,7 +3,6 @@
 import pytest
 import torch
 
-from test_readout_runner import tiny_reader
 from tinymem.memory.recurrent_slots import LatentSlotState
 from tinymem.research.delta_fact_readout import SlotReadout, own_state, read_answer
 

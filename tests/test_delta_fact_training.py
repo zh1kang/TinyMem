@@ -7,14 +7,13 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from test_readout_runner import tiny_reader
 from tinymem.memory.delta_slots import DeltaSlotWriter
 from tinymem.memory.query_pool_slots import QueryPoolSlotWriter
 from tinymem.research.adapted_readout import configure_read_adapter
 from tinymem.research.delta_fact_readout import SlotReadout
 from tinymem.research.delta_fact_training import Endpoint, TrainingExample, train_batch
 from tinymem.research.reader_adaptation import attach_reader_lora
-from tinymem.research.readout_runner import ReadoutQuery
+from tinymem.research.adapted_readout import ReadoutQuery
 
 
 def example():

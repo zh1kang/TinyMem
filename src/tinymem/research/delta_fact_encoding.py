@@ -13,7 +13,7 @@ from tinymem.research.delta_fact_data import ENTITIES, ROOM_PAIRS, Episode, pars
 from tinymem.research.delta_fact_training import Endpoint, TrainingExample
 from tinymem.research.memory_prompt import encode_memory_example
 from tinymem.research.pretrained import PretrainedReader
-from tinymem.research.readout_runner import ReadoutQuery
+from tinymem.research.adapted_readout import ReadoutQuery
 
 
 FeatureCache = Mapping[str, torch.Tensor]

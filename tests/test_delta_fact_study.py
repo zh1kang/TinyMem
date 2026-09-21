@@ -6,8 +6,7 @@ import json
 import pytest
 import torch
 
-from test_readout_runner import tiny_reader
-from test_update_runner import WordTokenizer
+from conftest import WordTokenizer
 from tinymem.research.delta_fact_fit import train_cell
 from tinymem.research.delta_fact_protocol import prepare_study, read_dataset, seal_training, settings
 from tinymem.research.delta_fact_scoring import packed_facts, score_cell, score_reference

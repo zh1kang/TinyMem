@@ -14,7 +14,6 @@ from tinymem.research.babi_memory_training import encode_question, train_batch
 from tinymem.research.delta_fact_profile import write_json
 from tinymem.research.oracle_fact_fit import new_readout
 
-pytest_plugins = ['test_readout_runner']
 
 
 def examples():

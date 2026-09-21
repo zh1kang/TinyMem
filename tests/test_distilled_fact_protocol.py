@@ -6,8 +6,7 @@ import json
 import pytest
 import torch
 
-from test_readout_runner import tiny_reader as tiny_reader
-from test_update_runner import WordTokenizer
+from conftest import WordTokenizer
 from tinymem.research import oracle_fact_protocol as parent_protocol
 from tinymem.research.delta_fact_protocol import read_dataset
 from tinymem.research.distilled_fact_protocol import (

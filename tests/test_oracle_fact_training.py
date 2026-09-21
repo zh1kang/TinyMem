@@ -3,7 +3,6 @@ from dataclasses import replace
 import pytest
 import torch
 
-from test_readout_runner import tiny_reader
 from tinymem.research.adapted_readout import configure_read_adapter
 from tinymem.research.delta_fact_data import build_dataset
 from tinymem.research.delta_fact_readout import SlotReadout

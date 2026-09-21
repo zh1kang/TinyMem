@@ -15,7 +15,7 @@ import random
 from statistics import fmean
 from typing import Any
 
-from tinymem.evaluation.longmemeval import normalized_answer
+from tinymem.evaluation.reader_gate import normalized_answer
 from tinymem.research.delta_fact_data import ROOM_PAIRS, replay
 from tinymem.research.delta_fact_profile import file_hash
 from tinymem.research.delta_fact_protocol import (

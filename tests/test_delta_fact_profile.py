@@ -5,7 +5,6 @@ import json
 
 import pytest
 
-from test_readout_runner import tiny_reader
 from test_delta_fact_training import example
 from tinymem.research.delta_fact_profile import CELLS, file_hash, frozen_base_hash, profile_cell
 from tinymem.research.reader_adaptation import attach_reader_lora
