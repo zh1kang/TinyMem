@@ -129,7 +129,6 @@ Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 ```bash
 uv sync --locked --python 3.11 --extra dev --extra research
 uv run --no-sync python -m pytest            # 326 tests, CPU, about 90 s
-uv run --no-sync python scripts/make_figures.py
 ```
 
 The tests use tiny random readers and synthetic facts.
@@ -199,7 +198,7 @@ The frontier bundle gets its own [gpu.slurm](scripts/frontier/gpu.slurm) and [cp
 | `src/tinymem/reader/` | Qwen loader and verifier, prefix reader, LoRA, prompt, exact-match scoring |
 | `src/tinymem/data/` | bAbI and WikiText parsers, reader case contract |
 | `src/tinymem/studies/` | One package per study: data, protocol, fitting, scoring, report |
-| `scripts/` | Runners, downloaders, `make_figures.py`, `profile_training.py`, Slurm templates |
+| `scripts/` | Runners, downloaders, `profile_training.py`, Slurm templates |
 | `tests/` | Contract and end-to-end tests on tiny models |
 | `results/` | CSV tables extracted from the sealed bundles, and the figures drawn from them |
 
