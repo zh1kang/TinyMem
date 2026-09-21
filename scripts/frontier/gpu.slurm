@@ -1,10 +1,10 @@
 #!/bin/bash
 # Run one frontier stage inside a prepared study directory on a single GPU.
 #
-#   cd <study> && sbatch [--array=0-11] frontier_gpu.slurm <features|preflight|train|evaluate|transfer>
+#   cd <study> && sbatch [--array=0-11] gpu.slurm <features|preflight|train|evaluate|transfer>
 #
 # The study directory carries its own source snapshot (source/src) and copies
-# of the frontier_*.py scripts; this file is hashed into the protocol with them.
+# of the scripts in this directory; this file is hashed into the protocol with them.
 # Required environment: TINYMEM_ENV (shell file that activates the Python
 # environment) and TINYMEM_MODEL (directory with the verified Qwen3-1.7B
 # snapshot). Override any directive below on the sbatch command line.
@@ -41,4 +41,4 @@ args=("$@")
 if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     args+=(--cell "$SLURM_ARRAY_TASK_ID")
 fi
-srun python frontier_run.py "${args[@]}" --study "$PWD" --model "$model"
+srun python run.py "${args[@]}" --study "$PWD" --model "$model"

@@ -9,7 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import torch
-from frontier_prepare import sha, write
+from prepare import sha, write
 
 from tinymem.reader.adapter import frozen_history_features
 from tinymem.studies.frontier.baselines import SUPPORTED_CODECS, TextStore

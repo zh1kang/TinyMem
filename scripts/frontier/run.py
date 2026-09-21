@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 import torch
-from frontier_prepare import sha, write
+from prepare import sha, write
 from safetensors.torch import load_file, save_file
 
 from tinymem.memory.quantized_slots import QuantizedSlotMemory
@@ -285,11 +285,11 @@ def main() -> None:
     elif args.stage == 'train':
         train(reader, args.study, protocol, data, args.cell)
     elif args.stage == 'evaluate':
-        from frontier_score import evaluate
+        from score import evaluate
         evaluate(reader, load_checkpoint(reader, args.study, protocol, args.cell),
                  args.study, protocol, data, args.cell)
     else:
-        from frontier_transfer import evaluate_transfer
+        from transfer import evaluate_transfer
         evaluate_transfer(reader, load_checkpoint(reader, args.study, protocol, args.cell),
                           args.study, protocol, data, args.cell)
 

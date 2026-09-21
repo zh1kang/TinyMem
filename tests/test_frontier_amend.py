@@ -8,7 +8,7 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts' / 'frontier'
 sys.path.insert(0, str(SCRIPTS))
 
-from frontier_prepare import (
+from prepare import (
     AMENDABLE,
     accepted_seal_hashes,
     amend,
@@ -19,8 +19,8 @@ from frontier_prepare import (
     snapshot_source,
     write,
 )
-from frontier_report import complete
-from frontier_run import FITTING_STAGES, sealed_protocol_hashes
+from report import complete
+from run import FITTING_STAGES, sealed_protocol_hashes
 
 
 def _study(tmp_path: Path, *, cells: int = 2, fitted: bool = True) -> Path:
@@ -30,9 +30,9 @@ def _study(tmp_path: Path, *, cells: int = 2, fitted: bool = True) -> Path:
     (study / 'inputs/dataset.json').write_text('{}')
     (study / 'source/src/tinymem/studies/frontier/eval.py').write_text('EVAL = 1\n')
     (study / 'source/src/tinymem/studies/frontier/fit.py').write_text('FIT = 1\n')
-    for name in ('frontier_run.py', 'frontier_score.py', 'frontier_prepare.py'):
+    for name in ('run.py', 'score.py', 'prepare.py'):
         (study / name).write_text(f'# {name}\n')
-    (study / 'frontier_gpu.slurm').write_text('#!/bin/bash\n')
+    (study / 'gpu.slurm').write_text('#!/bin/bash\n')
     declared = [{'kind': 'learned', 'budget': 64, 'seed': i} for i in range(cells - 1)]
     declared.append({'kind': 'text', 'budget': None, 'seed': cells - 1})
     write(study / 'protocol.json', {'version': 1, 'files': frozen_files(study), 'cells': declared})
@@ -51,12 +51,12 @@ def _study(tmp_path: Path, *, cells: int = 2, fitted: bool = True) -> Path:
 def test_amend_rebinds_evaluation_code_and_keeps_parent_seals(tmp_path):
     study = _study(tmp_path)
     parent = sha(study / 'protocol.json')
-    (study / 'frontier_score.py').write_text('# fixed\n')
+    (study / 'score.py').write_text('# fixed\n')
     (study / 'source/src/tinymem/studies/frontier/eval.py').write_text('EVAL = 2\n')
     amend(study, 'restore frozen reader after base encoder')
     protocol = json.loads((study / 'protocol.json').read_text())
     assert protocol['amends']['parent_protocol_sha256'] == parent
-    assert protocol['amends']['changed_files'] == ['frontier_score.py',
+    assert protocol['amends']['changed_files'] == ['score.py',
                                                    'source/src/tinymem/studies/frontier/eval.py']
     assert protocol['files'] == frozen_files(study)
     archived = study / protocol['amends']['parent_protocol_file']
@@ -87,7 +87,7 @@ def test_amend_requires_complete_fitting_and_a_real_change(tmp_path):
     with pytest.raises(ValueError, match='nothing changed'):
         amend(study, 'no')
     unfitted = _study(tmp_path / 'other', fitted=False)
-    (unfitted / 'frontier_score.py').write_text('# fixed\n')
+    (unfitted / 'score.py').write_text('# fixed\n')
     with pytest.raises(ValueError, match='must be complete'):
         amend(unfitted, 'no')
 
@@ -105,14 +105,14 @@ def _protocol(study: Path) -> dict:
 def test_seal_acceptance_follows_stage_dependencies_through_a_chain(tmp_path):
     study = _study(tmp_path, cells=2)
     original = sha(study / 'protocol.json')
-    (study / 'frontier_score.py').write_text('# fixed\n')
+    (study / 'score.py').write_text('# fixed\n')
     amend(study, 'evaluation fix')
     first = sha(study / 'protocol.json')
     _seal(study, 'evaluation', 0, first)
     _seal(study, 'evaluation', 1, original)
     _seal(study, 'transfer', 0, first)
     protocol = _protocol(study)
-    # frontier_score.py changed: evaluation seals under the original are stale,
+    # score.py changed: evaluation seals under the original are stale,
     # transfer and training seals are not.
     assert accepted_seal_hashes(study, protocol, 'training', 0) == {first, original}
     assert accepted_seal_hashes(study, protocol, 'transfer', 0) == {first, original}
@@ -121,11 +121,11 @@ def test_seal_acceptance_follows_stage_dependencies_through_a_chain(tmp_path):
     with pytest.raises(ValueError, match='evaluation/1 provenance'):
         complete(study, protocol, 'evaluation', 1)
     # A second, report-only amendment keeps every evaluation and transfer seal.
-    (study / 'frontier_report.py').write_text('# clamp\n')
+    (study / 'report.py').write_text('# clamp\n')
     amend(study, 'figure fix')
     second = sha(study / 'protocol.json')
     protocol = _protocol(study)
-    assert [r['changed_files'] for r in lineage(study, protocol)] == [['frontier_report.py'], ['frontier_score.py']]
+    assert [r['changed_files'] for r in lineage(study, protocol)] == [['report.py'], ['score.py']]
     assert accepted_seal_hashes(study, protocol, 'evaluation', 0) == {second, first}
     assert accepted_seal_hashes(study, protocol, 'transfer', 0) == {second, first, original}
     assert accepted_seal_hashes(study, protocol, 'training', 1) == {second, first, original}
@@ -136,7 +136,7 @@ def test_seal_acceptance_follows_stage_dependencies_through_a_chain(tmp_path):
 
 def test_lineage_rejects_a_tampered_archived_parent(tmp_path):
     study = _study(tmp_path)
-    (study / 'frontier_score.py').write_text('# fixed\n')
+    (study / 'score.py').write_text('# fixed\n')
     amend(study, 'fix')
     protocol = _protocol(study)
     archived = study / protocol['amends']['parent_protocol_file']
@@ -148,12 +148,12 @@ def test_lineage_rejects_a_tampered_archived_parent(tmp_path):
 def test_waiver_keeps_a_named_seal_valid_and_is_verified(tmp_path):
     study = _study(tmp_path, cells=2)
     original = sha(study / 'protocol.json')
-    (study / 'frontier_score.py').write_text('# fixed\n')
+    (study / 'score.py').write_text('# fixed\n')
     amend(study, 'first')
     first = sha(study / 'protocol.json')
     _seal(study, 'evaluation', 1, original)
     _seal(study, 'evaluation', 0, first)
-    (study / 'frontier_report.py').write_text('# clamp\n')
+    (study / 'report.py').write_text('# clamp\n')
     waiver = {'stage': 'evaluation', 'cells': [1], 'protocol_sha256': original,
               'reason': 'text cells never use the changed encoder path'}
     with pytest.raises(ValueError, match='not sealed under that hash'):
@@ -188,7 +188,7 @@ def test_snapshot_source_copies_package_and_frontier_scripts_byte_for_byte(tmp_p
     snapshot_source(study, repo)
     copied = frozen_files(study)
     assert 'source/src/tinymem/studies/frontier/eval.py' in copied
-    assert {'frontier_run.py', 'frontier_gpu.slurm', 'frontier_cpu.slurm'} <= set(copied)
-    assert copied['frontier_run.py'] == sha(SCRIPTS / 'frontier_run.py')
+    assert {'run.py', 'gpu.slurm', 'cpu.slurm'} <= set(copied)
+    assert copied['run.py'] == sha(SCRIPTS / 'run.py')
     assert copied['source/src/tinymem/memory/quantized_slots.py'] == sha(repo / 'src/tinymem/memory/quantized_slots.py')
     assert not list((study / 'source').rglob('__pycache__'))

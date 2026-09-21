@@ -29,6 +29,11 @@ def write(path: Path, value) -> None:
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
 
 
+# Scripts copied flat into the study directory and hashed into its protocol.
+SCRIPT_FILES = ('prepare.py', 'run.py', 'score.py', 'transfer.py', 'report.py',
+                'gpu.slurm', 'cpu.slurm')
+
+
 def snapshot_source(study: Path, repo: Path) -> None:
     """Copy the package source and the frontier scripts the study will execute.
 
@@ -41,9 +46,9 @@ def snapshot_source(study: Path, repo: Path) -> None:
         target = study / 'source' / path.relative_to(repo)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
-    for path in sorted(Path(__file__).resolve().parent.glob('frontier_*')):
-        if path.suffix in ('.py', '.slurm'):
-            shutil.copyfile(path, study / path.name)
+    here = Path(__file__).resolve().parent
+    for name in SCRIPT_FILES:
+        shutil.copyfile(here / name, study / name)
 
 
 def prepare(study: Path, repo: Path) -> None:
@@ -95,8 +100,7 @@ def frozen_files(study: Path) -> dict[str, str]:
     files = {str(p.relative_to(study)): sha(p)
              for root in (study / 'source/src', study / 'inputs')
              for p in sorted(root.rglob('*')) if p.is_file() and '__pycache__' not in p.parts}
-    files.update({p.name: sha(p) for p in sorted(study.glob('frontier_*.py'))})
-    files.update({p.name: sha(p) for p in sorted(study.glob('frontier_*.slurm'))})
+    files.update({name: sha(study / name) for name in SCRIPT_FILES if (study / name).exists()})
     return files
 
 
@@ -144,20 +148,20 @@ def freeze(study: Path) -> None:
 # quantized_slots, reader/adapter) and every input stay bound to the parent
 # seals. This file may change because the data it produced is hashed under
 # inputs/ and cannot be altered by editing the generator afterwards.
-AMENDABLE = frozenset({'frontier_prepare.py', 'frontier_run.py', 'frontier_score.py',
-                       'frontier_transfer.py', 'frontier_report.py',
+AMENDABLE = frozenset({'prepare.py', 'run.py', 'score.py',
+                       'transfer.py', 'report.py',
                        'source/src/tinymem/studies/frontier/eval.py'})
 
 
 # Frozen files whose change invalidates a stage's seal. Fitting stages depend on
 # every file outside AMENDABLE, which an amendment can never change, so their
-# seals stay valid through any chain. frontier_run.py checks only the immediate
+# seals stay valid through any chain. run.py checks only the immediate
 # parent; under a chained amendment its evaluate and transfer stages fail closed.
 STAGE_DEPENDENCIES = {
     'training': frozenset(),
-    'evaluation': frozenset({'frontier_run.py', 'frontier_score.py',
+    'evaluation': frozenset({'run.py', 'score.py',
                              'source/src/tinymem/studies/frontier/eval.py'}),
-    'transfer': frozenset({'frontier_run.py', 'frontier_transfer.py',
+    'transfer': frozenset({'run.py', 'transfer.py',
                            'source/src/tinymem/studies/frontier/eval.py'}),
 }
 

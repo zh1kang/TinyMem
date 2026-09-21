@@ -1,7 +1,7 @@
 #!/bin/bash
 # Write the frontier report from a study directory whose cells are all sealed.
 #
-#   cd <study> && sbatch frontier_cpu.slurm
+#   cd <study> && sbatch cpu.slurm
 #
 # Required environment: TINYMEM_ENV (shell file that activates the Python
 # environment). Override any directive below on the sbatch command line.
@@ -22,4 +22,4 @@ export PYTHONPATH="$PWD/source/src"
 export HF_HUB_OFFLINE=1
 export MPLCONFIGDIR="$PWD/.cache/matplotlib"
 mkdir -p logs
-srun python frontier_report.py --study "$PWD"
+srun python report.py --study "$PWD"

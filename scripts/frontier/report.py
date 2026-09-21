@@ -12,8 +12,8 @@ import matplotlib
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from frontier_prepare import accepted_seal_hashes, lineage, sha, write
-from frontier_run import checked
+from prepare import accepted_seal_hashes, lineage, sha, write
+from run import checked
 
 from tinymem.studies.frontier.analysis import analyze
 from tinymem.studies.frontier.data import load_questions

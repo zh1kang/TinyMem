@@ -219,15 +219,15 @@ uv run --no-sync python scripts/run_qa1_study.py evaluate --study artifacts/qa1 
 uv run --no-sync python scripts/run_qa1_study.py report --study artifacts/qa1
 
 # Storage frontier (12 cells); stages after prepare run inside the study directory
-uv run --no-sync python scripts/frontier/frontier_prepare.py prepare --study artifacts/frontier
-uv run --no-sync python scripts/frontier/frontier_prepare.py freeze --study artifacts/frontier
+uv run --no-sync python scripts/frontier/prepare.py prepare --study artifacts/frontier
+uv run --no-sync python scripts/frontier/prepare.py freeze --study artifacts/frontier
 cd artifacts/frontier && export PYTHONPATH=$PWD/source/src
-python frontier_run.py features --study . --model ../../$MODEL
-python frontier_run.py preflight --study . --model ../../$MODEL
-python frontier_run.py train --study . --model ../../$MODEL --cell 0       # ... 11
-python frontier_run.py evaluate --study . --model ../../$MODEL --cell 0
-python frontier_run.py transfer --study . --model ../../$MODEL --cell 0
-python frontier_report.py --study .
+python run.py features --study . --model ../../$MODEL
+python run.py preflight --study . --model ../../$MODEL
+python run.py train --study . --model ../../$MODEL --cell 0       # ... 11
+python run.py evaluate --study . --model ../../$MODEL --cell 0
+python run.py transfer --study . --model ../../$MODEL --cell 0
+python report.py --study .
 ```
 
 Add `--smoke` to the delta, oracle, or distilled `prepare` to get a bundle with one cell and a few steps that exercises the code path end to end.
@@ -246,15 +246,15 @@ sbatch --dependency=afterok:<train job> scripts/slurm/cpu.slurm scripts/run_delt
 sbatch --array=0-11 scripts/slurm/cpu.slurm scripts/run_distilled_study.py train --study artifacts/distilled
 ```
 
-The frontier study copies [frontier_gpu.slurm](scripts/frontier/frontier_gpu.slurm) and [frontier_cpu.slurm](scripts/frontier/frontier_cpu.slurm) into the study directory at `prepare` and hashes them with the protocol.
+The frontier study copies [gpu.slurm](scripts/frontier/gpu.slurm) and [cpu.slurm](scripts/frontier/cpu.slurm) into the study directory at `prepare` and hashes them with the protocol.
 Submit them from inside the study directory with `TINYMEM_ENV` and `TINYMEM_MODEL` set:
 
 ```bash
 cd artifacts/frontier
 export TINYMEM_ENV=/path/to/.venv/bin/activate TINYMEM_MODEL=/path/to/qwen3-1.7b
-sbatch frontier_gpu.slurm features
-sbatch --array=0-11 frontier_gpu.slurm train
-sbatch frontier_cpu.slurm
+sbatch gpu.slurm features
+sbatch --array=0-11 gpu.slurm train
+sbatch cpu.slurm
 ```
 
 ## Repository layout
