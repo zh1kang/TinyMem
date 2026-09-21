@@ -34,7 +34,21 @@ Writers can learn correct states when the state is supervised, but end-to-end an
 
 ## How it works
 
-![Architecture: a statement is encoded by the frozen base, a learned writer updates a fixed-byte state, and a learned bridge feeds that state to the reader with the question](results/architecture.png)
+```mermaid
+flowchart LR
+    subgraph write [Write path: once per statement, before any question]
+        S[Statement] --> E[Frozen Qwen3-1.7B<br/>base weights, no adapter]
+        E -- features --> W[Learned writer<br/>gated, delta, or int8 slots]
+    end
+    W -- write --> M[(Stored state<br/>fixed bytes)]
+    M -. old state .-> W
+    subgraph read [Read path: never modifies the state]
+        B[Learned bridge<br/>state to prefix vectors] --> R[Qwen3-1.7B reader<br/>frozen or rank-8 LoRA]
+        Q[Question] --> R
+        R --> A[Answer<br/>exact match]
+    end
+    M -- read --> B
+```
 
 The writer never sees a question, an answer, or a gold write address.
 The byte count is only what survives between writes and reads; shared weights and dictionaries are reported separately.

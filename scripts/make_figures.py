@@ -43,60 +43,6 @@ def save(figure: plt.Figure, name: str) -> None:
     print("wrote", RESULTS / name)
 
 
-def architecture() -> None:
-    """Block diagram of the write path and the read path around the stored state."""
-    figure, axis = plt.subplots(figsize=(9, 3.9))
-    axis.set_xlim(0, 100)
-    axis.set_ylim(0, 42)
-    axis.axis("off")
-    axis.grid(False)
-
-    def box(x, y, w, h, title, body="", fill="#f4f4f4", edge=COLOR["dark"], lw=1.0):
-        axis.add_patch(plt.Rectangle((x, y), w, h, facecolor=fill, edgecolor=edge, linewidth=lw, zorder=2))
-        axis.text(x + w / 2, y + h - 2.6, title, ha="center", va="center", fontsize=9, fontweight="bold", zorder=3)
-        if body:
-            axis.text(x + w / 2, y + (h - 4.2) / 2, body, ha="center", va="center", fontsize=7.6,
-                      color="#444444", linespacing=1.3, zorder=3)
-
-    def arrow(x0, y0, x1, y1, label="", dy=1.6):
-        axis.annotate("", (x1, y1), (x0, y0), zorder=1,
-                      arrowprops={"arrowstyle": "-|>", "color": COLOR["dark"], "lw": 1.1, "shrinkA": 0, "shrinkB": 0})
-        if label:
-            axis.text((x0 + x1) / 2, (y0 + y1) / 2 + dy, label, ha="center", va="bottom", fontsize=7.4, color="#444444")
-
-    # Write path (top row).
-    top = 27
-    box(2, top, 16, 12, "Statement", "one sentence,\nno question in sight", fill="white")
-    box(24, top, 20, 12, "Frozen Qwen3-1.7B", "base weights, no adapter\nfeatures for this record only", fill="#e8eef6")
-    box(50, top, 22, 12, "Learned writer", "gated slots, delta rule,\nor int8 attention slots", fill="#e6f2ef")
-    arrow(18, top + 6, 24, top + 6)
-    arrow(44, top + 6, 50, top + 6, "features")
-    # The state spans both rows: written from the top, read from the bottom.
-    low = 2
-    box(78, low, 20, top + 12 - low, "Stored state",
-        "fixed bytes:\n66, 258, or\n64 / 256 / 1,024\n\nnothing else\nsurvives between\nwrite and read",
-        fill="#fff4dc", edge=COLOR["orange"], lw=1.6)
-    arrow(72, top + 6, 78, top + 6, "write")
-    axis.annotate("", (61, top - 0.2), (78, 22), zorder=4,
-                  arrowprops={"arrowstyle": "-|>", "color": COLOR["grey"], "lw": 1.0, "linestyle": "--",
-                              "connectionstyle": "arc3,rad=0.3", "shrinkA": 0, "shrinkB": 0})
-    axis.text(71.5, 18.5, "old state", fontsize=7.2, color=COLOR["grey"], ha="center")
-
-    # Read path (bottom row), right to left.
-    box(50, low, 22, 12, "Learned bridge", "state -> prefix vectors\nin reader width", fill="#e6f2ef")
-    box(24, low, 20, 12, "Qwen3-1.7B reader", "frozen, or rank-8 Q/V LoRA\nprefix + question", fill="#e8eef6")
-    box(2, low, 16, 12, "Answer", "greedy tokens,\nexact match", fill="white")
-    arrow(78, low + 6, 72, low + 6, "read")
-    arrow(50, low + 6, 44, low + 6)
-    arrow(24, low + 6, 18, low + 6)
-    axis.text(34, low + 13.2, "question", ha="center", fontsize=7.4, color="#444444")
-    axis.annotate("", (34, low + 12), (34, low + 16.5), zorder=1,
-                  arrowprops={"arrowstyle": "-|>", "color": COLOR["dark"], "lw": 1.0, "shrinkA": 0, "shrinkB": 0})
-    axis.text(50, 41.5, "Write path: runs once per statement, before any question exists", fontsize=8, ha="center", color="#444444")
-    axis.text(50, -0.8, "Read path: never modifies the state; no raw text or KV cache bypasses it", fontsize=8, ha="center", va="top", color="#444444")
-    save(figure, "architecture.png")
-
-
 def phase_one() -> None:
     rows = read("phase1.csv")
     seeds = sorted({row["seed"] for row in rows})
@@ -210,7 +156,6 @@ def storage_frontier() -> None:
 
 
 if __name__ == "__main__":
-    architecture()
     phase_one()
     writer_collapse()
     qa1_readout()
